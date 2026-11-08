@@ -48,3 +48,35 @@
 3. `~/.pi-larkd/config.json`（模板见 README，无 secret）
 4. 飞书开放平台：自建应用 → 机器人 + 事件订阅（WS 模式）+ `im:message` 与 `im:message.group_msg`（群用）权限 + card.action.trigger 回调 → **发布版本**
 5. plist 中 `LARK_APP_ID` 填入后 `launchctl bootstrap`
+
+## P1（B 系列）
+
+### B1 两 channel 并行 — **需真实飞书**
+- 命令：两个已绑定 chat 同时发消息；`grep admitted ~/Library/Logs/pi-larkd.log` 取两 run 的起止时间戳。
+- 预期：两 run 时间区间重叠（F28 断言）；同 channel 连发由 inbox 串行。
+
+### B2 准入矩阵实测 — **需真实飞书**
+- 自动化部分已绿：T-P1-1a（admission.test.ts）。
+- 实测：非白名单成员群内 @ 零响应；陌生 DM 收 deny 提示（bridge F23 逻辑已测，需实测 notice 文案送达）；另一 bot 消息被 drop。
+
+### B3 board 巡检 — **需真实 rex-flow 工作区**
+- 命令：绑定带 boardPath 的 channel（channel_bind 或直接改 bindings doc）→ 等巡检基线 → 改 board（如 task 状态）→ 观察推送；kill -9 于 escalate 后重启验证不重复。
+- 预期：变化 ≤60s 推送一次；重启后不重复。已知取舍见 DEVIATIONS D-8（post 后、环 commit 前的窗口宁重勿漏）。
+
+### B4 审批闭环实测 — **需真实飞书卡片**
+- 自动化部分已绿：approvals.test.ts 7 条（deny/approve_once/Always TTL+精确串/非 owner 忽略/敏感路径/超时/重入）。
+- 实测：卡片三键在飞书端渲染与点击回调（operatorOpenId 是否为 open_id 形如 ou_）；卡片 JSX 的 Lark 渲染。
+
+### B5 审批跨重启 — **可半自动（launchd + 手动卡片）**
+- 命令：pending 时 `launchctl kickstart -k` → 重启后同 approvalId 重发卡片 → 点击生效。
+- 自动化部分已绿：crash re-entry 用例（新 manager 同 ID 重发 + 决策生效）。真实卡片点击路径需 B4 前置。
+
+### B6 远程控制 — **需真实飞书**
+- 自动化部分已绿：owner status/new；非 owner stop 零效果（admission.test.ts）。
+- 实测：owner DM 发 `stop`（run 进行中）/`compact`/`new <note>`；群内命令须 @。
+
+### B7 只读纪律 — **DONE（自动化）**
+- test/b7-static.test.ts：flow-board 写子命令零调用、board.json 零写路径、dispatch 只写 dispatch/ 树；M5 白名单 const 零突变、allow 全部条件化。运行时矩阵见 approvals.test.ts。
+
+### B8 冻结语义 — **可半自动**
+- 自动化部分：bridge 队列语义依赖 durable inbox（pi 语义保证）；手动：pending 期间发第二条消息，pi.inbox 断言（`pi-larkd status` 的 inbox 深度）。

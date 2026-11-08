@@ -9,11 +9,15 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import {
 	AssistantEntry,
 	Harness,
+	InboxDoc,
+	LiveDoc,
 	MemoryStorage,
+	configure,
 	createRegistry,
 	defineDocFamily,
 	defineExtension,
 	type Conversation,
+	type ConversationId,
 	type ConversationView,
 	type EntryId,
 	type SubmissionId,
@@ -37,6 +41,7 @@ export type {
 	SessionEnd,
 	EntryId,
 	SubmissionId,
+	Extension,
 };
 
 /** What a bridge pump needs from a settled submission. */
@@ -74,6 +79,44 @@ export interface SubstrateConfig {
 	extraExtensions?: Extension[];
 	/** System instructions for the root conversation. */
 	instructions: string;
+	/** P1 routing: the owner's chat/open_id migrate into the binding table's first row. */
+	homeChatId?: string;
+	ownerOpenId?: string;
+}
+
+// ---------------------------------------------------------------------------
+// P1 additions: bindings, atomic admission, approvals, control ops
+// ---------------------------------------------------------------------------
+
+export type { ChannelBinding, ChannelPolicy, ApprovalState } from "./durable-ext/docs.js";
+import {
+	ApprovalDoc,
+	BindingsDoc,
+	PendingApprovalsDoc,
+	SessionApprovalsDoc,
+	sessionApprovalKey,
+	type ApprovalState,
+	type ChannelBinding,
+} from "./durable-ext/docs.js";
+
+export type AdmitResult =
+	| { kind: "admitted"; submissionId: SubmissionId }
+	| { kind: "denied"; reason: string }
+	| { kind: "unbound" };
+
+/** Pure admission policy (P1-1.2); exported for the T-P1-1a matrix test. */
+export function checkPolicy(
+	binding: ChannelBinding,
+	msg: { senderId: string; isBot: boolean; isMention: boolean },
+): string | null {
+	const { policy } = binding;
+	if (policy.dropBots && msg.isBot) return "bot-dropped";
+	if (policy.groupPolicy === "disabled") return "group-disabled";
+	// INV-P1-1: nothing outside allowSenders is ever submitted (DM, group, commands alike).
+	if (!policy.allowSenders.includes(msg.senderId)) return "sender-not-allowed";
+	if (policy.mentionOnly && !msg.isMention) return "mention-required";
+	if (policy.muted.includes(msg.senderId)) return "muted";
+	return null;
 }
 
 /**
@@ -161,6 +204,46 @@ export interface Substrate {
 	readonly closed: Promise<SessionEnd>;
 	/** Diagnostic dump for `pi-larkd status` and tests. */
 	inspect(): Promise<{ conversations: string[]; usage: Record<string, unknown> }>;
+	// ----- P1: routing table -----
+	/** The routing table and its home chat (P0 migration lands homeChatId as row one). */
+	bindings(): Promise<{ bindings: Record<string, ChannelBinding>; homeChatId: string }>;
+	/** Create or replace a binding in one commit (channel_bind tool / DM natural language). */
+	bindChannel(input: { chatId: string; cwd: string; boardPath?: string; isGroup: boolean }): Promise<string>;
+	/** Resolve the conversation bound to a chat (root fallback for unbound chats). */
+	bindingConversation(chatId: string): Promise<Conversation>;
+	/** Atomic admission (P1-1.2): policy + binding read + submit + watermark in ONE commit. */
+	admitBinding(
+		chatId: string,
+		msg: { messageId: string; text: string; senderId: string; isBot: boolean; isMention: boolean; sentAt: number },
+	): Promise<AdmitResult>;
+	/** Reverse lookup: which chat owns a conversation (approval cards route back). */
+	chatOfConversation(conversationId: number): Promise<string | undefined>;
+	// ----- P1: remote control (owner-only; callers check owner after policy) -----
+	abortConversation(chatId: string): Promise<void>;
+	resetConversation(chatId: string, note: string): Promise<void>;
+	compactConversation(chatId: string): Promise<void>;
+	statusText(chatId: string): Promise<string>;
+	// ----- P1: M5 approval doc operations (manager lives app-side; R2-1) -----
+	getApproval(approvalId: string): Promise<ApprovalState | undefined>;
+	/** Create the pending doc idempotently; false when it already exists (crash re-entry). */
+	createApprovalPending(state: ApprovalState & { approvalId: string }): Promise<boolean>;
+	/** Verdict with the pending-guard: only a pending approval is written (R2-3). */
+	decideApproval(approvalId: string, status: ApprovalState["status"], decidedBy: string): Promise<boolean>;
+	/** All pending approval ids with their deadlines (janitor + startup sweep). */
+	pendingApprovals(): Promise<Array<{ approvalId: string; deadlineAt: number; chatId: string }>>;
+	/** Record an "Always" session approval (4h TTL, exact digest; F21). */
+	setSessionApproval(conversationId: number, toolName: string, digest: string, approvalId: string): Promise<void>;
+	// ----- P1: M4 patrol task lifecycle -----
+	/** Create the patrol task for a chat if none is live; true when created. */
+	ensurePatrol(
+		chatId: string,
+		taskFactory: () => { task: TaskLike; input: { chatId: string } },
+	): Promise<boolean>;
+}
+
+/** Minimal structural type for a task definition handed in by the daemon. */
+export interface TaskLike {
+	definition: { name: string; version: number };
 }
 
 /** Build the CPA provider: an anthropic-compatible endpoint whose key arrives via `apiKeyFor`. */
@@ -236,10 +319,61 @@ export async function openSubstrate(cfg: SubstrateConfig): Promise<Substrate> {
 			},
 		}));
 
+	const modelRef = { provider: cfg.model.provider, modelId: cfg.model.modelId };
+
+	/** Trusted cast: binding docs store conversation ids as plain JSON numbers. */
+	const convId = (n: number) => n as ConversationId;
+
+	const bindingsSnapshot = async () => await harness.snapshot(BindingsDoc, BACKGROUND_CONTEXT);
+
+	async function bindingConversation(chatId: string): Promise<Conversation> {
+		const table = await bindingsSnapshot();
+		const binding = table?.bindings[chatId];
+		if (binding !== undefined) {
+			const conv = await harness.conversation(convId(binding.conversationId), BACKGROUND_CONTEXT);
+			if (conv !== undefined) return conv;
+			// Corrupt binding (conversation vanished): degrade to root rather than fail.
+		}
+		return rootConversation();
+	}
+
+	/** P0→P1 migration: homeChatId becomes the table's first row, bound to the ROOT conversation. */
+	async function migrateHomeBinding(): Promise<void> {
+		if (!cfg.homeChatId || !cfg.ownerOpenId) return;
+		const table = await bindingsSnapshot();
+		if (table?.bindings[cfg.homeChatId] !== undefined) return;
+		const root = await rootConversation();
+		await harness.commit(async (tx) => {
+			const doc = await tx.doc(BindingsDoc);
+			if (doc.bindings[cfg.homeChatId as string] !== undefined) return; // re-check in commit
+			doc.bindings[cfg.homeChatId as string] = {
+				chatId: cfg.homeChatId as string,
+				conversationId: Number(root.id),
+				cwd: agentHome,
+				policy: {
+					allowSenders: [cfg.ownerOpenId as string],
+					groupPolicy: "open",
+					mentionOnly: false,
+					muted: [],
+					dropBots: true,
+					whenBusy: "followUp",
+				},
+				createdAt: Date.now(),
+			};
+			doc.homeChatId = cfg.homeChatId as string;
+		}, BACKGROUND_CONTEXT);
+	}
+	await migrateHomeBinding();
+
+	/** Internal signal: binding changed between the pre-read and the commit; retry once. */
+	class BindingChanged extends Error {}
+
+	const SESSION_APPROVAL_TTL_MS = 4 * 60 * 60 * 1000; // F21
+
 	return {
 		resume: () => harness.resume(),
 		root: rootConversation,
-		conversationFor: async () => rootConversation(), // P0: single conversation
+		conversationFor: (chatId: string) => bindingConversation(chatId),
 		submit: (conv, draft, context = BACKGROUND_CONTEXT) => conv.submit(draft, context),
 		admit: (conv, draft, watermark) =>
 			harness.commit(async (tx) => {
@@ -302,6 +436,189 @@ export async function openSubstrate(cfg: SubstrateConfig): Promise<Substrate> {
 				conversations: page.items.map((c) => String(c.id)),
 				usage: usage as unknown as Record<string, unknown>,
 			};
+		},
+		// ----- P1: routing table -----
+		bindings: async () => {
+			const table = await bindingsSnapshot();
+			return { bindings: table?.bindings ?? {}, homeChatId: table?.homeChatId ?? "" };
+		},
+		bindChannel: async ({ chatId, cwd, boardPath, isGroup }) =>
+			harness.commit(async (tx) => {
+				const doc = await tx.doc(BindingsDoc);
+				const existing = doc.bindings[chatId];
+				let conversationId: number;
+				if (existing === undefined) {
+					const record = await tx.createConversation({ ownership: { kind: "ownerless" } });
+					await configure(tx, record.id, { model: modelRef, cwd });
+					conversationId = Number(record.id);
+				} else {
+					conversationId = existing.conversationId;
+					if (existing.cwd !== cwd) {
+						await configure(tx, convId(conversationId), { cwd });
+					}
+				}
+				const next: ChannelBinding = {
+					chatId,
+					conversationId,
+					cwd,
+					boardPath,
+					policy:
+						existing?.policy ??
+						{
+							allowSenders: cfg.ownerOpenId ? [cfg.ownerOpenId] : [],
+							groupPolicy: "open" as const,
+							mentionOnly: isGroup,
+							muted: [],
+							dropBots: true,
+							whenBusy: "followUp" as const,
+						},
+					createdAt: existing?.createdAt ?? Date.now(),
+				};
+				doc.bindings[chatId] = boardPath === undefined
+					? (({ boardPath: _drop, ...rest }) => rest)(next) // docs are JSON: no undefined values
+					: next;
+				return `bound ${chatId} → conversation ${conversationId} (cwd ${cwd}${boardPath ? `, board ${boardPath}` : ""})`;
+			}, BACKGROUND_CONTEXT),
+		bindingConversation: (chatId: string) => bindingConversation(chatId),
+		admitBinding: (async (chatId: string, msg: { messageId: string; text: string; senderId: string; isBot: boolean; isMention: boolean; sentAt: number }) => {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const conv = await bindingConversation(chatId);
+				try {
+					return await harness.commit(async (tx) => {
+						const doc = await tx.doc(BindingsDoc);
+						const binding = doc.bindings[chatId];
+						if (binding === undefined) return { kind: "unbound" } as AdmitResult;
+						// Policy verdict on the fresh in-commit state; a denial writes nothing.
+						const denial = checkPolicy(binding, msg);
+						if (denial !== null) return { kind: "denied", reason: denial } as AdmitResult;
+						if (binding.conversationId !== Number(conv.id)) throw new BindingChanged();
+						// F10: admission is the first table write; the watermark doc write follows.
+						const submissionId = await conv.submit(tx, {
+							type: "input",
+							content: msg.text,
+							requestId: `feishu:${msg.messageId}`,
+							whenBusy: binding.policy.whenBusy,
+						});
+						const wm = await tx.doc(WatermarkDoc, chatId, chatId);
+						wm.watermarkMs = msg.sentAt;
+						return { kind: "admitted", submissionId } as AdmitResult;
+					}, BACKGROUND_CONTEXT);
+				} catch (error) {
+					if (error instanceof BindingChanged && attempt === 0) continue;
+					throw error;
+				}
+			}
+			throw new Error("admitBinding: binding kept changing");
+		}) as Substrate["admitBinding"],
+		chatOfConversation: async (conversationId) => {
+			const table = await bindingsSnapshot();
+			for (const binding of Object.values(table?.bindings ?? {})) {
+				if (binding.conversationId === conversationId) return binding.chatId;
+			}
+			return undefined;
+		},
+		// ----- P1: remote control -----
+		abortConversation: async (chatId) => {
+			const conv = await bindingConversation(chatId);
+			await conv.abort(BACKGROUND_CONTEXT);
+		},
+		resetConversation: async (chatId, note) => {
+			const conv = await bindingConversation(chatId);
+			await conv.reset(note, BACKGROUND_CONTEXT);
+		},
+		compactConversation: async (chatId) => {
+			const conv = await bindingConversation(chatId);
+			await conv.compact(undefined, BACKGROUND_CONTEXT);
+		},
+		statusText: async (chatId) => {
+			const conv = await bindingConversation(chatId);
+			const live = await harness.snapshot(LiveDoc, conv.id, BACKGROUND_CONTEXT);
+			const inbox = await harness.snapshot(InboxDoc, conv.id, BACKGROUND_CONTEXT);
+			const queued = Array.isArray(inbox?.items) ? inbox.items.length : 0;
+			const lines = [`conversation ${conv.id} · chat ${chatId}`];
+			if (live?.run) {
+				lines.push(`run 进行中（turn ${live.run.turns}，in-flight 工具 ${live.tools?.length ?? 0}）`);
+			} else if (live?.runFailure) {
+				lines.push(`上次 run 未获回答：${live.runFailure.reason}`);
+			} else {
+				lines.push("run 空闲");
+			}
+			lines.push(`inbox 排队：${queued}`);
+			return lines.join("\n");
+		},
+		// ----- P1: M5 approval doc operations -----
+		getApproval: async (approvalId) =>
+			await harness.snapshot(ApprovalDoc, approvalId, BACKGROUND_CONTEXT),
+		createApprovalPending: async (state) => {
+			const before = await harness.snapshot(ApprovalDoc, state.approvalId, BACKGROUND_CONTEXT);
+			if (before !== undefined) return false;
+			await harness.commit(async (tx) => {
+				const doc = await tx.doc(ApprovalDoc, state.approvalId, state.approvalId);
+				doc.toolName = state.toolName;
+				doc.digest = state.digest;
+				doc.argsPreview = state.argsPreview;
+				doc.conversationId = state.conversationId;
+				doc.chatId = state.chatId;
+				doc.status = "pending";
+				doc.createdAt = state.createdAt;
+				doc.deadlineAt = state.deadlineAt;
+				const index = await tx.doc(PendingApprovalsDoc);
+				if (!index.approvalIds.includes(state.approvalId)) {
+					index.approvalIds = [...index.approvalIds, state.approvalId];
+				}
+			}, BACKGROUND_CONTEXT);
+			return true;
+		},
+		decideApproval: (approvalId, status, decidedBy) =>
+			harness.commit(async (tx) => {
+				const doc = await tx.doc(ApprovalDoc, approvalId, approvalId);
+				// R2-3 pending-guard: first writer wins; a late verdict cannot revive a timeout.
+				if (doc.status !== "pending") return false;
+				doc.status = status;
+				doc.decidedAt = Date.now();
+				doc.decidedBy = decidedBy;
+				const index = await tx.doc(PendingApprovalsDoc);
+				index.approvalIds = index.approvalIds.filter((id) => id !== approvalId);
+				return true;
+			}, BACKGROUND_CONTEXT),
+		pendingApprovals: async () => {
+			const index = await harness.snapshot(PendingApprovalsDoc, BACKGROUND_CONTEXT);
+			const out: Array<{ approvalId: string; deadlineAt: number; chatId: string }> = [];
+			for (const approvalId of index?.approvalIds ?? []) {
+				const doc = await harness.snapshot(ApprovalDoc, approvalId, BACKGROUND_CONTEXT);
+				if (doc?.status === "pending") {
+					out.push({ approvalId, deadlineAt: doc.deadlineAt, chatId: doc.chatId });
+				}
+			}
+			return out;
+		},
+		setSessionApproval: (conversationId, toolName, digest, approvalId) =>
+			harness.commit(async (tx) => {
+				const key = sessionApprovalKey(conversationId, toolName, digest);
+				const doc = await tx.doc(SessionApprovalsDoc, key, key);
+				doc.expiresAt = Date.now() + SESSION_APPROVAL_TTL_MS;
+				doc.approvalId = approvalId;
+			}, BACKGROUND_CONTEXT),
+		// ----- P1: M4 patrol lifecycle -----
+		ensurePatrol: async (chatId, taskFactory) => {
+			const table = await bindingsSnapshot();
+			const binding = table?.bindings[chatId];
+			if (binding === undefined || binding.boardPath === undefined) return false;
+			const page = await harness.commit(
+				(tx) => tx.scanTasks({ kind: taskFactory().task.definition.name, conversationId: convId(binding.conversationId) }, 1),
+				BACKGROUND_CONTEXT,
+			);
+			const live = page.items.find((t) => t.state.status !== "terminal");
+			if (live !== undefined) return false;
+			const { task, input } = taskFactory();
+			await harness.commit(async (tx) => {
+				await tx.createTask(task as never, input, {
+					ownership: { kind: "conversation" },
+					conversationId: convId(binding.conversationId),
+					background: true, // survives conversation aborts and idle waits
+				});
+			}, BACKGROUND_CONTEXT);
+			return true;
 		},
 	};
 }

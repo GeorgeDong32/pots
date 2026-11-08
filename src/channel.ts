@@ -14,6 +14,8 @@ import {
 	encodeThreadId,
 } from "@larksuite/vercel-chat-adapter";
 import type { Logger } from "./log.js";
+import type { ApprovalCardData } from "./approvals.js";
+import { buildApprovalCard } from "./cards.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -43,11 +45,109 @@ export interface Channel {
 	post(chatId: string, chunks: AsyncIterable<string>, done?: (full: string) => void): Promise<void>;
 	/** Post a plain one-shot text message (notices, escalations). */
 	postText(chatId: string, text: string): Promise<void>;
+	/** Post an approval card with Approve/Always/Deny buttons (M5). */
+	postCard(chatId: string, card: ApprovalCardData): Promise<void>;
 	onCardAction(cb: (a: CardAction) => void): void;
 	/** Read messages a disconnect window may have missed; duplicates are absorbed upstream. */
 	backfill(chatId: string, since: Date): Promise<InboundMessage[]>;
 	start(): Promise<void>;
 	stop(): Promise<void>;
+}
+
+/** Hermes-style burst merge defaults (P1-1.6). */
+export interface BurstOptions {
+	enabled: boolean;
+	silenceMs: number; // text window
+	mediaSilenceMs: number; // window once media is seen
+	maxMessages: number;
+	maxChars: number;
+}
+
+export const DEFAULT_BURST: BurstOptions = {
+	enabled: true,
+	silenceMs: 600,
+	mediaSilenceMs: 800,
+	maxMessages: 8,
+	maxChars: 4000,
+};
+
+
+/**
+ * Hermes-style burst merger (P1-1.6): a silence window flushes the batch
+ * (0.6s text / 0.8s after media), capped at 8 messages / 4000 chars; a new
+ * sender or a cap hit flushes early. Merged requestIds are deterministic
+ * per batch, so redelivery of the same window re-merges identically.
+ */
+export interface BurstMerger {
+	push(inbound: InboundMessage): void;
+	flushAll(): void;
+}
+
+export function createBurstMerger(options: BurstOptions, emit: (m: InboundMessage) => void): BurstMerger {
+	const state = new Map<
+		string,
+		{ texts: string[]; chars: number; firstId: string; lastId: string; lastSender: string; lastSentAt: number; hasMedia: boolean; timer: ReturnType<typeof setTimeout> | undefined }
+	>();
+
+	function flush(chatId: string): void {
+		const batch = state.get(chatId);
+		state.delete(chatId);
+		if (batch === undefined) return;
+		if (batch.timer !== undefined) clearTimeout(batch.timer);
+		if (batch.texts.length === 0) return;
+		emit({
+			chatId,
+			messageId: batch.texts.length === 1 ? batch.firstId : `${batch.firstId}..${batch.lastId}`,
+			text: batch.texts.join("\n"),
+			senderId: batch.lastSender,
+			isMention: false,
+			isBot: false,
+			sentAt: batch.lastSentAt,
+		});
+	}
+
+	return {
+		push(inbound) {
+			if (!options.enabled) {
+				emit(inbound);
+				return;
+			}
+			let batch = state.get(inbound.chatId);
+			if (
+				batch !== undefined &&
+				(batch.lastSender !== inbound.senderId ||
+					batch.texts.length >= options.maxMessages ||
+					batch.chars >= options.maxChars)
+			) {
+				flush(inbound.chatId);
+				batch = undefined;
+			}
+			if (batch === undefined) {
+				batch = {
+					texts: [],
+					chars: 0,
+					firstId: inbound.messageId,
+					lastId: inbound.messageId,
+					lastSender: inbound.senderId,
+					lastSentAt: inbound.sentAt,
+					hasMedia: false,
+					timer: undefined,
+				};
+				state.set(inbound.chatId, batch);
+			}
+			batch.texts.push(inbound.text);
+			batch.chars += inbound.text.length;
+			batch.lastId = inbound.messageId;
+			batch.lastSender = inbound.senderId;
+			batch.lastSentAt = inbound.sentAt;
+			if (batch.timer !== undefined) clearTimeout(batch.timer);
+			const window = batch.hasMedia ? options.mediaSilenceMs : options.silenceMs;
+			batch.timer = setTimeout(() => flush(inbound.chatId), window);
+		},
+		flushAll() {
+			for (const chatId of [...state.keys()]) flush(chatId);
+		},
+	};
 }
 
 export interface ChannelOptions {
@@ -58,6 +158,8 @@ export interface ChannelOptions {
 	logger: Logger;
 	/** Minimum interval between streamed chunks (F17: card 10 QPS headroom). */
 	minChunkIntervalMs?: number;
+	/** Inbound burst merging; pass {enabled:false} to admit messages one by one. */
+	burst?: BurstOptions;
 }
 
 /** Injectable process runner so tests can stub lark-cli. */
@@ -66,6 +168,7 @@ export const defaultRunner: CommandRunner = async (file, args) => execFileAsync(
 
 export function createChannel(options: ChannelOptions, runner: CommandRunner = defaultRunner): Channel {
 	const minInterval = options.minChunkIntervalMs ?? 200;
+	const burst = options.burst ?? DEFAULT_BURST;
 	let messageCb: ((m: InboundMessage) => void) | undefined;
 	let cardCb: ((a: CardAction) => void) | undefined;
 
@@ -92,19 +195,26 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 		return bot.thread(encodeThreadId({ chatId, rootId: "" }));
 	}
 
+	// Burst merging (P1-1.6), via the exported testable merger.
+	const merger = createBurstMerger(burst, (merged) => messageCb?.(merged));
+	const intoBurst = merger.push;
+
 	function dispatch(thread: Thread, message: Message): void {
 		const chatId = channelIdFromThreadId(message.threadId);
 		rememberThread(chatId, thread);
+		// Bot authors never produce agent input (channel-level; policy re-checks in commit).
+		const isBot = message.author.isBot === true;
+		if (isBot) return;
 		const inbound: InboundMessage = {
 			chatId,
 			messageId: message.id,
 			text: message.text,
 			senderId: message.author.userId ?? "",
 			isMention: message.isMention === true,
-			isBot: message.author.isBot === true,
+			isBot,
 			sentAt: Date.now(),
 		};
-		messageCb?.(inbound);
+		intoBurst(inbound);
 	}
 
 	// Registration order is routing order: DMs first, then mentions, then the rest.
@@ -175,12 +285,19 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 			const thread = await threadFor(chatId);
 			await thread.post(text);
 		},
+		async postCard(chatId, card) {
+			const thread = await threadFor(chatId);
+			await thread.post(buildApprovalCard(card));
+		},
 		onCardAction(cb) {
 			cardCb = cb;
 		},
 		backfill: (chatId, since) => backfillChat(runner, options, chatId, since),
 		start: () => bot.initialize(),
-		stop: () => bot.shutdown(),
+		stop: async () => {
+			merger.flushAll(); // admit anything still inside the burst window
+			await bot.shutdown();
+		},
 	};
 }
 

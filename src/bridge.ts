@@ -24,6 +24,9 @@ export interface Bridge {
 	finalize(note: string): Promise<void>;
 }
 
+/** Owner-only remote control commands (P1-4). Parsed after the policy check. */
+const CONTROL_RE = /^(stop|status|compact)$|^new\s+([\s\S]+)/;
+
 interface Pump {
 	/** Immediately close the stream iterator; the card finalizes with what it has. */
 	close(): void;
@@ -48,29 +51,68 @@ export function createBridge(deps: {
 	async function handle(msg: InboundMessage): Promise<void> {
 		try {
 			if (msg.isBot) return; // dropBots: never react to other bots (F24/P1 default)
-			if (msg.chatId !== config.homeChatId) {
+			const { bindings, homeChatId } = await substrate.bindings();
+			const binding = bindings[msg.chatId];
+			// P1-1.7 deny-by-default for unbound chats (home is migrated into the table).
+			if (binding === undefined) {
+				if (msg.chatId === homeChatId) return; // home without a row cannot happen post-migration
 				await denyNotice(msg.chatId);
 				return;
 			}
-			const conv = await substrate.conversationFor(msg.chatId);
-			const submissionId = await substrate.admit(
-				conv,
-				{
-					type: "input",
-					content: msg.text,
-					requestId: `feishu:${msg.messageId}`, // INV-P0-2: idempotent across redelivery
-					whenBusy: "followUp",
-				},
-				{ chatId: msg.chatId, ms: msg.sentAt },
-			);
-			logger.info("admitted", { chatId: msg.chatId, messageId: msg.messageId, submissionId });
-			void pump(conv, msg.chatId, submissionId);
+			// P1-4: owner-only remote control, parsed AFTER the policy gate.
+			if (msg.senderId === config.ownerOpenId) {
+				const match = CONTROL_RE.exec(msg.text.trim());
+				if (match !== null) {
+					await runControl(msg.chatId, match, binding.policy.mentionOnly && !msg.isMention);
+					return;
+				}
+			}
+			const result = await substrate.admitBinding(msg.chatId, msg);
+			if (result.kind === "denied") {
+				logger.info("admission denied", { chatId: msg.chatId, messageId: msg.messageId, reason: result.reason });
+				return; // silent: policy denials never echo back to the sender
+			}
+			if (result.kind === "unbound") {
+				await denyNotice(msg.chatId);
+				return;
+			}
+			const conv = await substrate.bindingConversation(msg.chatId);
+			logger.info("admitted", { chatId: msg.chatId, messageId: msg.messageId, submissionId: result.submissionId });
+			void pump(conv, msg.chatId, result.submissionId);
 		} catch (error) {
 			logger.error("handle failed", {
 				chatId: msg.chatId,
 				messageId: msg.messageId,
 				error: (error as Error).message,
 			});
+		}
+	}
+
+	/** Remote control execution (P1-4): owner-checked by the caller; mention gating for groups. */
+	async function runControl(
+		chatId: string,
+		match: RegExpExecArray,
+		needsMention: boolean,
+	): Promise<void> {
+		if (needsMention) return; // group commands additionally require the @-mention
+		const command = match[1] ?? `new`;
+		const note = match[2];
+		try {
+			if (command === "stop") {
+				await substrate.abortConversation(chatId);
+				await channel.postText(chatId, "🛑 已中止当前 run（排队消息一并撤回）。");
+			} else if (command === "status") {
+				await channel.postText(chatId, await substrate.statusText(chatId));
+			} else if (command === "compact") {
+				await substrate.compactConversation(chatId);
+				await channel.postText(chatId, "🧹 已请求上下文压缩。");
+			} else if (command === "new" && note !== undefined) {
+				await substrate.resetConversation(chatId, note);
+				await channel.postText(chatId, `🔄 已重置会话，handoff：${note.slice(0, 100)}`);
+			}
+		} catch (error) {
+			logger.error("control failed", { chatId, command, error: (error as Error).message });
+			await channel.postText(chatId, `⚠️ 命令执行失败：${(error as Error).message}`);
 		}
 	}
 

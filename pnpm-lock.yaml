@@ -178,6 +178,9 @@ importers:
       '@earendil-works/pi-durable':
         specifier: 1.5.0
         version: 1.5.0(@aws-sdk/credential-provider-node@3.972.94)(@smithy/signature-v4@5.7.5)(supports-color@7.2.0)
+      '@earendil-works/pi-schema':
+        specifier: 1.5.0
+        version: 1.5.0
       '@larksuite/vercel-chat-adapter':
         specifier: 0.3.0
         version: 0.3.0(chat@4.44.0(supports-color@7.2.0))(debug@4.4.3(supports-color@7.2.0))(supports-color@7.2.0)

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "lint": "eslint .",
     "check": "pnpm typecheck && pnpm test && pnpm lint"
@@ -27,6 +27,7 @@
     "@earendil-works/chord": "*",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-durable": "1.5.0",
+    "@earendil-works/pi-schema": "1.5.0",
     "@larksuite/vercel-chat-adapter": "0.3.0",
     "chat": "4.44.0"
   },

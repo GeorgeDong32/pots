@@ -4,7 +4,7 @@ import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { createBridge } from "../src/bridge.js";
 import type { CardAction, Channel, InboundMessage } from "../src/channel.js";
 import { createLogger } from "../src/log.js";
-import { openTestSubstrate } from "./helpers.js";
+import { openTestSubstrate } from "./helpers-p1.js";
 
 class FakeChannel implements Channel {
 	posted: { chatId: string; full: string }[] = [];
@@ -28,6 +28,7 @@ class FakeChannel implements Channel {
 	async postText(chatId: string, text: string): Promise<void> {
 		this.texts.push({ chatId, text });
 	}
+	async postCard(_chatId: string, _card: { approvalId: string }): Promise<void> {}
 	async backfill(): Promise<InboundMessage[]> {
 		return [];
 	}
@@ -64,7 +65,7 @@ async function settlePosted(channel: FakeChannel, count: number, timeoutMs = 15_
 
 describe("M2 bridge routing (P0-4.4)", () => {
 	it("admits messages from the home chat; the answer streams back exactly once", async () => {
-		const { substrate, faux } = await openTestSubstrate();
+		const { substrate, faux } = await openTestSubstrate({ homeChatId: "oc_home", ownerOpenId: "ou_owner" });
 		faux.setResponses([fauxAssistantMessage("Hello world, this is the answer.")]);
 		const channel = new FakeChannel();
 		createBridge({ substrate, channel, config: { homeChatId: "oc_home", ownerOpenId: "ou_owner" }, logger });
@@ -75,7 +76,7 @@ describe("M2 bridge routing (P0-4.4)", () => {
 	});
 
 	it("denies unbound chats with the fixed notice, with cooldown", async () => {
-		const { substrate } = await openTestSubstrate();
+		const { substrate } = await openTestSubstrate({ homeChatId: "oc_home", ownerOpenId: "ou_owner" });
 		const channel = new FakeChannel();
 		createBridge({ substrate, channel, config: { homeChatId: "oc_home", ownerOpenId: "ou_owner" }, logger });
 		channel.deliver(msg({ chatId: "oc_stranger", messageId: "om_s1" }));
@@ -88,7 +89,7 @@ describe("M2 bridge routing (P0-4.4)", () => {
 	});
 
 	it("drops bot messages silently", async () => {
-		const { substrate } = await openTestSubstrate();
+		const { substrate } = await openTestSubstrate({ homeChatId: "oc_home", ownerOpenId: "ou_owner" });
 		const channel = new FakeChannel();
 		createBridge({ substrate, channel, config: { homeChatId: "oc_home", ownerOpenId: "ou_owner" }, logger });
 		channel.deliver(msg({ isBot: true, messageId: "om_b" }));
@@ -98,7 +99,7 @@ describe("M2 bridge routing (P0-4.4)", () => {
 	});
 
 	it("a follow-up message replaces the pump: the second card carries the ongoing answer", async () => {
-		const { substrate, faux } = await openTestSubstrate();
+		const { substrate, faux } = await openTestSubstrate({ homeChatId: "oc_home", ownerOpenId: "ou_owner" });
 		faux.setResponses([fauxAssistantMessage("first answer")]);
 		const channel = new FakeChannel();
 		createBridge({ substrate, channel, config: { homeChatId: "oc_home", ownerOpenId: "ou_owner" }, logger });
