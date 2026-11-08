@@ -234,6 +234,8 @@ export interface Substrate {
 	/** Record an "Always" session approval (4h TTL, exact digest; F21). */
 	setSessionApproval(conversationId: number, toolName: string, digest: string, approvalId: string): Promise<void>;
 	// ----- P1: M4 patrol task lifecycle -----
+	/** Create a singleton task owned by the root conversation if none live. */
+	ensureRootTask(task: TaskLike): Promise<boolean>;
 	/** Create the patrol task for a chat if none is live; true when created. */
 	ensurePatrol(
 		chatId: string,
@@ -599,6 +601,23 @@ export async function openSubstrate(cfg: SubstrateConfig): Promise<Substrate> {
 				doc.expiresAt = Date.now() + SESSION_APPROVAL_TTL_MS;
 				doc.approvalId = approvalId;
 			}, BACKGROUND_CONTEXT),
+		ensureRootTask: async (task) => {
+			const root = await rootConversation();
+			const page = await harness.commit(
+				(tx) => tx.scanTasks({ kind: task.definition.name, conversationId: root.id }, 1),
+				BACKGROUND_CONTEXT,
+			);
+			const live = page.items.find((t) => t.state.status !== "terminal");
+			if (live !== undefined) return false;
+			await harness.commit(async (tx) => {
+				await tx.createTask(task as never, {}, {
+					ownership: { kind: "conversation" },
+					conversationId: root.id,
+					background: true,
+				});
+			}, BACKGROUND_CONTEXT);
+			return true;
+		},
 		// ----- P1: M4 patrol lifecycle -----
 		ensurePatrol: async (chatId, taskFactory) => {
 			const table = await bindingsSnapshot();

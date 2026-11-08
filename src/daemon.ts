@@ -21,6 +21,8 @@ import { createSupervisor, summarizeBoard } from "./supervisor.ts";
 import { createMemoryExtension } from "./durable-ext/memory-ext.ts";
 import { createMemoryV1Deps } from "./memory-v1.ts";
 import { reindexBoth } from "./memcore.ts";
+import { createCronExtension, createMorningReportTask, createReminderExtension, createReminderTask } from "./durable-ext/cron-tasks.ts";
+import { writeFile } from "node:fs/promises";
 
 const SHUTDOWN_NOTE = "⏸ pi-larkd 正在关闭（重启后会继续未完成的回复）。";
 
@@ -106,6 +108,7 @@ async function main(): Promise<void> {
 	});
 	const approvals = new ApprovalManager({ channel, ownerOpenId: cfg.ownerOpenId, logger });
 	const supervisorLate = lateBind<SupervisorDeps>();
+	const substrateRef: { current?: Substrate } = {};
 	// M4 patrol task (deps are channel-bound; the substrate installs it below).
 	const patrolTask = createPatrolTask({
 		readBoard: (boardPath) =>
@@ -113,6 +116,37 @@ async function main(): Promise<void> {
 		post: (chatId, text) => channel.postText(chatId, text),
 		summarize: summarizeBoard,
 	});
+	// P3-3 cron family: morning report (09:00, missed-run catch-up) + reminders.
+	const morningTask = createMorningReportTask({
+		morningBody: async () => {
+			const parts: string[] = [];
+			try {
+				const { bindings } = (await substrateRef.current?.bindings()) ?? { bindings: {}, homeChatId: "" };
+				for (const binding of Object.values(bindings)) {
+					if (binding.boardPath === undefined) continue;
+					try {
+						const content = await readFile(binding.boardPath, "utf8");
+						parts.push(`▸ ${binding.cwd}: ${summarizeBoard(binding.boardPath, content)}`);
+					} catch {
+						// board unreadable: skip line
+					}
+				}
+			} catch {
+				// bindings unreadable
+			}
+			try {
+				const { execFile } = await import("node:child_process");
+				const { promisify } = await import("node:util");
+				const agenda = await promisify(execFile)(cfg.larkCliPath, ["calendar", "+agenda"], { timeout: 15_000 });
+				parts.push(`📅 日程\n${agenda.stdout.trim().slice(0, 1500)}`);
+			} catch {
+				parts.push("📅 日程不可用");
+			}
+			return parts.join("\n\n") || "（无内容）";
+		},
+		post: (text) => channel.postText(cfg.homeChatId, text),
+	});
+	const reminderTask = createReminderTask((text) => channel.postText(cfg.homeChatId, text));
 
 	const substrate: Substrate = await openSubstrate({
 		storage: { kind: "sqlite", path: cfg.dbPath },
@@ -133,10 +167,15 @@ async function main(): Promise<void> {
 			createSupervisorExtension(supervisorLate.proxy),
 			createPatrolExtension(patrolTask),
 			createMemoryExtension({ agentHome: cfg.agentHome, v1: createMemoryV1Deps() }),
+			createCronExtension(morningTask),
+			createReminderExtension(reminderTask),
 		],
 	});
 	approvals.attach(substrate);
+	substrateRef.current = substrate;
 	supervisorLate.set(createSupervisor(substrate, { logger }));
+	// One morning-report instance, owned by the root conversation (P3-3.1).
+	await substrate.ensureRootTask(morningTask);
 
 	channel.onCardAction((action) => void approvals.onCardAction(action));
 
@@ -197,6 +236,56 @@ async function main(): Promise<void> {
 		dbPath: cfg.dbPath,
 		pid: process.pid,
 	});
+
+	// P3-4: dead-man heartbeat (30min) + status.json (60s) + patrol self-heal.
+	const startedAt = Date.now();
+	let lastError = "none";
+	const heartbeat = async (): Promise<void> => {
+		try {
+			const inspect = await substrate.inspect();
+			await channel.postText(
+				cfg.homeChatId,
+				`💓 pi-larkd alive · uptime ${Math.round((Date.now() - startedAt) / 3600000)}h · conversations ${inspect.conversations.length}`,
+			);
+			// Patrol self-heal (P3-3.3): re-arm any dead patrol for board-bound chats.
+			const current = await substrate.bindings();
+			for (const binding of Object.values(current.bindings)) {
+				if (binding.boardPath !== undefined) {
+					await substrate.ensurePatrol(binding.chatId, () => ({ task: patrolTask, input: { chatId: binding.chatId } }));
+				}
+			}
+		} catch (error) {
+			lastError = (error as Error).message;
+			logger.warn("heartbeat failed", { error: lastError });
+		}
+	};
+	const heartbeatTimer = setInterval(() => void heartbeat(), 30 * 60 * 1000);
+	const statusTimer = setInterval(() => {
+		void (async () => {
+			try {
+				const inspect = await substrate.inspect();
+				await writeFile(
+					join(cfg.agentHome, "status.json"),
+					JSON.stringify(
+						{
+							pid: process.pid,
+							uptimeMs: Date.now() - startedAt,
+							conversations: inspect.conversations,
+							usage: inspect.usage,
+							lastError,
+							ts: new Date().toISOString(),
+						},
+						null,
+						1,
+					),
+					"utf8",
+				);
+			} catch {
+				// status is best-effort
+			}
+		})();
+	}, 60_000);
+	void heartbeatTimer; void statusTimer;
 
 	// The daemon never exits on its own: a degraded-but-alive posture beats a
 	// restart loop (F07). Unhandled rejections are logged, not fatal.

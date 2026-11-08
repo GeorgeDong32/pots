@@ -95,3 +95,22 @@
 
 ### C4 consolidate — **DONE（自动化，核心语义）**
 - runConsolidation 必收缩/删除 provenance/原子批已在隔离 HOME 下钉住。真机部分：afterRun 去抖 task 触发 directive → agent 调 memory_consolidate 的全链路（需 CPA 真模型）。
+
+## P3（D 系列）
+
+### D1 replay 审计报告 — **DONE**
+- docs/replay-audit.md：全工具标注表 + bash 无实测对象的说明（registry 从未装 bash）+ restartLimit 调优依据。
+- bash 实测：**N/A-by-design**（P0-P3 未引入 bash；引入前必须补实测，见审计文档）。
+
+### D2 soak — **脚本 DONE + 15s 冒烟 PASS；30min/24h 挂机待真机**
+- 脚本：`node --experimental-transform-types scripts/soak.ts --convs 3 --seconds 1800 [--model cpa]`
+- 冒烟（3conv×15s，faux）：PASS · 219 msgs · 0 未答 · RSS 146MB / WAL 4MB（阈值 400/200）。
+- 真机门：CPA 真模型 3conv×30min（观察 429/排队/降速与 channel 软上限结论）；24h RSS/WAL 曲线；超标处置（F32）动作见脚本输出字段。
+
+### D3'/D3 cron — **自动化部分 DONE；连续 3 日准点待真机**
+- 自动化：nextMorningReport 数学、same-day 补跑判定、跨日不重发、reminder 交付（cron.test.ts 4 条）。
+- 真机门：晨报连续 3 日 09:00 准点（含 Mac 睡眠日醒后 ≤60s 补跑）；提醒跨 `launchctl kickstart -k` 存活。
+
+### D4 升级演练 — **dry-run DONE；真升级待实际版本变更**
+- `sh scripts/upgrade.sh <ver> --dry-run` 已跑通全流程（bootout→snapshot→pin→install→check→bootstrap 清单）。
+- 真机门：真实 pin 升级（如 1.5.1）走同一脚本 + A/B 回归清单。

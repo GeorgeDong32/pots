@@ -26,6 +26,18 @@ export default tseslint.config(
 	js.configs.recommended,
 	tseslint.configs.recommended,
 	{
+		languageOptions: {
+			globals: {
+				console: "readonly",
+				process: "readonly",
+				setTimeout: "readonly",
+				clearTimeout: "readonly",
+				setInterval: "readonly",
+				clearInterval: "readonly",
+			},
+		},
+	},
+	{
 		files: ["src/**/*.ts", "test/**/*.ts"],
 		languageOptions: {
 			parserOptions: { ecmaVersion: 2023, sourceType: "module" },

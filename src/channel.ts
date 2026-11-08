@@ -254,6 +254,37 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 		}
 	}
 
+	// P3-2.3: group chats share 5 QPS across ALL bots — stay under it with a
+	// 4 QPS send pace; texts that queue up while spacing elapses coalesce into
+	// one message (over-limit merges into a single card).
+	const sendQueue = new Map<string, string[]>();
+	let draining = false;
+	const sendSpacingMs = 250;
+
+	async function enqueueText(chatId: string, text: string): Promise<void> {
+		const batch = sendQueue.get(chatId) ?? [];
+		batch.push(text);
+		sendQueue.set(chatId, batch);
+		if (draining) return;
+		draining = true;
+		try {
+			while (sendQueue.size > 0) {
+				await new Promise((r) => setTimeout(r, sendSpacingMs));
+				for (const [qid, items] of [...sendQueue.entries()]) {
+					sendQueue.delete(qid);
+					try {
+						const thread = await threadFor(qid);
+						await thread.post(items.join("\n"));
+					} catch (error) {
+						options.logger.warn("coalesced send failed", { chatId: qid, error: (error as Error).message });
+					}
+				}
+			}
+		} finally {
+			draining = false;
+		}
+	}
+
 	return {
 		onMessage(cb) {
 			messageCb = cb;
@@ -282,8 +313,7 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 			}
 		},
 		async postText(chatId, text) {
-			const thread = await threadFor(chatId);
-			await thread.post(text);
+			await enqueueText(chatId, text);
 		},
 		async postCard(chatId, card) {
 			const thread = await threadFor(chatId);
