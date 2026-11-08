@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.gd32.pi-larkd</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>/Users/gd32/Coding/pi-larkd/launchd/run.sh</string>
+    </array>
+
+    <!-- Secrets stay in the Keychain (F13): only the config path is passed here. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PI_LARKD_CONFIG</key>
+        <string>/Users/gd32/.pi-larkd/config.json</string>
+        <key>LARK_APP_ID</key>
+        <string>SET_ME_IN_PLACE</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- F07: restart only on crash; the daemon never exits voluntarily. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/gd32/Library/Logs/pi-larkd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/gd32/Library/Logs/pi-larkd.log</string>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
