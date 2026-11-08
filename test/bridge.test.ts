@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { createBridge } from "../src/bridge.js";
-import type { CardAction, Channel, InboundMessage } from "../src/channel.js";
-import { createLogger } from "../src/log.js";
-import { openTestSubstrate } from "./helpers-p1.js";
+import { createBridge } from "../src/bridge.ts";
+import type { CardAction, Channel, InboundMessage } from "../src/channel.ts";
+import { createLogger } from "../src/log.ts";
+import { openTestSubstrate } from "./helpers-p1.ts";
 
 class FakeChannel implements Channel {
 	posted: { chatId: string; full: string }[] = [];

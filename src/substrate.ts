@@ -88,7 +88,7 @@ export interface SubstrateConfig {
 // P1 additions: bindings, atomic admission, approvals, control ops
 // ---------------------------------------------------------------------------
 
-export type { ChannelBinding, ChannelPolicy, ApprovalState } from "./durable-ext/docs.js";
+export type { ChannelBinding, ChannelPolicy, ApprovalState } from "./durable-ext/docs.ts";
 import {
 	ApprovalDoc,
 	BindingsDoc,
@@ -97,7 +97,7 @@ import {
 	sessionApprovalKey,
 	type ApprovalState,
 	type ChannelBinding,
-} from "./durable-ext/docs.js";
+} from "./durable-ext/docs.ts";
 
 export type AdmitResult =
 	| { kind: "admitted"; submissionId: SubmissionId }

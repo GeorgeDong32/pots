@@ -14,7 +14,7 @@ import {
 	type HookApi,
 	type ToolHookCall,
 } from "@earendil-works/pi-durable";
-import { SessionApprovalsDoc, sessionApprovalKey } from "./docs.js";
+import { SessionApprovalsDoc, sessionApprovalKey } from "./docs.ts";
 
 export interface GateDecision {
 	allow: boolean;
@@ -33,8 +33,20 @@ export interface GateCall {
 	callId: string;
 }
 
-/** Read-only tools that never need approval (P1-3.1). */
-const READ_ONLY_WHITELIST = new Set(["read", "board_status", "board_tasks", "watch_run", "workspace_list"]);
+/** Tools allowed without approval (P1-3.1 + P2-1.3): read-only monitors plus the
+ * memory tools, which are path-jailed by construction (memory_write only
+ * appends under <agentHome>/memory; consolidate/apply run through the
+ * cc-core store validator under the layer lock). */
+const READ_ONLY_WHITELIST = new Set([
+	"read",
+	"board_status",
+	"board_tasks",
+	"watch_run",
+	"workspace_list",
+	"memory_write",
+	"session_recall",
+	"memory_consolidate",
+]);
 
 /**
  * Sensitive paths refused for ANY tool, ANY verdict — never enter approval

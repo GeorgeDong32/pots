@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { backfillChat, backfillStartArg, type ChannelOptions, type CommandRunner } from "../src/channel.js";
-import { createLogger } from "../src/log.js";
+import { backfillChat, backfillStartArg, type ChannelOptions, type CommandRunner } from "../src/channel.ts";
+import { createLogger } from "../src/log.ts";
 
 const logger = createLogger("error", () => undefined);
 

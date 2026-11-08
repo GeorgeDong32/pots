@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { cleanupDir, openTestSubstrate, tmpDir } from "./helpers.js";
-import { openSubstrate, type ModelConfig, type Substrate } from "../src/substrate.js";
+import { cleanupDir, openTestSubstrate, tmpDir } from "./helpers.ts";
+import { openSubstrate, type ModelConfig, type Substrate } from "../src/substrate.ts";
 
 let dir: string | undefined;
 const opened: Substrate[] = [];

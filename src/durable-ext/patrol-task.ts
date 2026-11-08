@@ -10,7 +10,7 @@
  */
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { defineExtension, defineTask, type Extension, type TaskRuntime } from "@earendil-works/pi-durable";
-import { BindingsDoc, PatrolDoc, type ChannelBinding } from "./docs.js";
+import { BindingsDoc, PatrolDoc, type ChannelBinding } from "./docs.ts";
 
 export interface PatrolDeps {
 	/** Read the board file; null when missing. */

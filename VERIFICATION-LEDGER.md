@@ -80,3 +80,18 @@
 
 ### B8 冻结语义 — **可半自动**
 - 自动化部分：bridge 队列语义依赖 durable inbox（pi 语义保证）；手动：pending 期间发第二条消息，pi.inbox 断言（`pi-larkd status` 的 inbox 深度）。
+
+## P2（C 系列）
+
+### C1 v0 注入+跨重启 — **DONE（自动化）**
+- test/memory.test.ts：shared/channel 两层注入 pi.system section 断言；memory_write 落盘。「次日新 run 生效」即文件系统持久，等价已验。
+
+### C2 用户层共享（pi ↔ pi-larkd 双向）— **半自动**
+- 自动化：indexHeader 读 `~/.pi/agent/memory`（隔离 HOME 下）已绿；consolidate 批次原子性/必收缩已绿。
+- 真机：pi TUI 侧（cc-core）写一条 → pi-larkd 新 run 注入可见；反向亦然（同文件双向）。注意双方 consolidate 都拿 acquireLayerLock。
+
+### C3 recall 选档 — **DP-P2-1 决策=b（见 DEVIATIONS D-10）**
+- 工具模式已落地（session_recall）；LLM 选档为后续升级。真机：长会话中 session_recall 命中率体感。
+
+### C4 consolidate — **DONE（自动化，核心语义）**
+- runConsolidation 必收缩/删除 provenance/原子批已在隔离 HOME 下钉住。真机部分：afterRun 去抖 task 触发 directive → agent 调 memory_consolidate 的全链路（需 CPA 真模型）。

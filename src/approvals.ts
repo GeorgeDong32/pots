@@ -8,10 +8,10 @@
  * owner-only verdicts (F03), the 10-minute timeout sweep, and "Always"
  * session approvals (4h TTL, exact digest, F21).
  */
-import type { CardAction, Channel } from "./channel.js";
-import type { Logger } from "./log.js";
-import { callDigest, sensitivePathHit, type ApprovalGate, type GateCall, type GateDecision } from "./durable-ext/approval-gate.js";
-import type { ApprovalState, Substrate } from "./substrate.js";
+import type { CardAction, Channel } from "./channel.ts";
+import type { Logger } from "./log.ts";
+import { callDigest, sensitivePathHit, type ApprovalGate, type GateCall, type GateDecision } from "./durable-ext/approval-gate.ts";
+import type { ApprovalState, Substrate } from "./substrate.ts";
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000; // P1-3.2 default 10min → denied
 const SWEEP_INTERVAL_MS = 60 * 1000;

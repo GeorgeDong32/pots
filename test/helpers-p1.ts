@@ -1,5 +1,5 @@
 import { fauxProvider } from "@earendil-works/pi-ai";
-import { openSubstrate, type Extension, type Substrate } from "../src/substrate.js";
+import { openSubstrate, type Extension, type Substrate } from "../src/substrate.ts";
 
 /** P1 test helper: substrate with routing init and optional extra extensions. */
 export async function openTestSubstrate(
@@ -34,4 +34,4 @@ export async function openTestSubstrate(
 	return { substrate, faux };
 }
 
-export { checkPolicy } from "../src/substrate.js";
+export { checkPolicy } from "../src/substrate.ts";

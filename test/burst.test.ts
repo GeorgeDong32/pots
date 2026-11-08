@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createBurstMerger, DEFAULT_BURST, type InboundMessage } from "../src/channel.js";
+import { createBurstMerger, DEFAULT_BURST, type InboundMessage } from "../src/channel.ts";
 
 function msg(overrides: Partial<InboundMessage> = {}): InboundMessage {
 	return {

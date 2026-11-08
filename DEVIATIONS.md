@@ -46,3 +46,24 @@
 
 - **对照**：F11 要求「post 后 crash → rerun 不重复推送」。
 - **实现**：LastSeen+pendingDiff 先 commit（F11 顺序），post 后写 postedDiffIds 环。crash 窗口分析：(a) commit 后、escalate 前死 → 重入 pendingDiff 补投（通知送达）；(b) post 后、环 commit 前死 → 重入发现 diffId 已在环中…… 环 commit 未落，实际会重投一次（宁重勿漏，与 backfill 哲学一致）。B3 实测关注此窗口。
+
+## D-9 cc-core 语义核的就地引用方式（P2-2）
+
+- **对照**：spec「以 workspace 依赖（pnpm workspace 或 file: 协议）引 pi-larkd，不 copy」。
+- **实情**：cc-core（@georgedong32/pi-claude-code-core）是单包仓库，exports 只暴露 `./types`；`extensions/memory/` 不是包也无 package.json——file:/workspace 依赖在事实上不可构造（且不得改动现有仓）。
+- **最小替代**：`src/memcore.ts` 作为**唯一**跨仓进口，相对路径 `../../Pi-Extension/pi-claude-code-core/extensions/memory/*.ts` 就地引用源码（不 copy）。后果与对策：
+  1. daemon 运行时改为 `node --experimental-transform-types src/daemon.ts`（cc-core 用了 TS parameter property，strip-only 不够；全仓 .ts 直跑，无构建产物——run.sh 已同步）。
+  2. tsc 纳入其源码后 `noUncheckedIndexedAccess` 必须放宽（cc-core 不用该 flag），已在 tsconfig 移除并在此记录。
+  3. fork drift 管理（P2-2.4）：cc-core 为真相源；本文件头注释即映射表；cc-core 变更涉及时人工核对 memcore.ts 的 re-export 面。
+
+## D-10 DP-P2-1 决策：recall 选档取 b（纯工具模式）+ 静态索引头
+
+- **对照**：spec 给出 a) section 内 async 侧调 LLM selector + memo/doc 缓存；b) 回退纯工具模式（session_recall 主动检索 + 注入降级静态索引头）。倾向 a，P2 首日原型定。
+- **实情**：a 的「每用户消息一次选择」依赖 pi ExtensionAPI 的 message_end/turn 级钩子与自定义消息投递机（cc-core RV 机器）；pi-durable 的 section 渲染按请求触发且无 per-user-message 挂点，缓存键与失效语义要自行重造，本 Phase 内做不到与 cc-core 同等正确性保证。
+- **决策**：b。注入= 双层静态索引头（8KB 软顶）+ session_recall 工具主动检索；LLM 选档记为后续升级项（接口面已按 a 预留：section async 合法、memo 可落 doc）。
+
+## D-11 记忆锁与 cc-core 锁原语的关系（F25 / P2-2.1）
+
+- **对照**：spec「先核实 cc-core store 写入原语；无论结果补 per-file flock」。
+- **核实结果**：cc-core 写原语=per-file tmp+rename（原子）；consolidation 自带 `acquireLayerLock`（mkdir 原子锁 + TTL 抢占）——即跨进程互斥已存在于核心，pi 侧与 pi-larkd 侧共用同一把锁。额外 per-file flock 会与该锁形成两层（无必要且引入新的失败面）。
+- **决定**：pi-larkd 的写路径全部经 `runConsolidation`/`applyMemoryOps`（内部持锁）；读侧快照容忍瞬时不一致（tmp+rename 保证单文件原子）。DEVIATIONS 记录此为 F25 的落地形态。

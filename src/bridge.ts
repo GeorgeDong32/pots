@@ -3,14 +3,14 @@
  * watch→post pump. P0 posture: one bound chat (`homeChatId`) routing to the
  * root conversation; every other chat is denied with a fixed notice (F23).
  */
-import type { Channel, InboundMessage } from "./channel.js";
-import type { Logger } from "./log.js";
+import type { Channel, InboundMessage } from "./channel.ts";
+import type { Logger } from "./log.ts";
 import {
 	partialText,
 	type Conversation,
 	type SubmissionId,
 	type Substrate,
-} from "./substrate.js";
+} from "./substrate.ts";
 
 export interface BridgeConfig {
 	homeChatId: string;

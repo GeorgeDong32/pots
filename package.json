@@ -8,8 +8,7 @@
     "node": ">=22.19"
   },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "lint": "eslint .",
     "check": "pnpm typecheck && pnpm test && pnpm lint"

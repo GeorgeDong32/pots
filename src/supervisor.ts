@@ -11,9 +11,9 @@ import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { SupervisorDeps } from "./durable-ext/supervisor-tools.js";
-import type { Logger } from "./log.js";
-import type { Substrate } from "./substrate.js";
+import type { SupervisorDeps } from "./durable-ext/supervisor-tools.ts";
+import type { Logger } from "./log.ts";
+import type { Substrate } from "./substrate.ts";
 
 const execFileAsync = promisify(execFile);
 

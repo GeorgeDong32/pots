@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createPatrolExtension, createPatrolTask } from "../src/durable-ext/patrol-task.js";
-import type { Substrate } from "../src/substrate.js";
-import { openTestSubstrate } from "./helpers-p1.js";
+import { createPatrolExtension, createPatrolTask } from "../src/durable-ext/patrol-task.ts";
+import type { Substrate } from "../src/substrate.ts";
+import { openTestSubstrate } from "./helpers-p1.ts";
 
 const closed: Substrate[] = [];
 afterEach(async () => {

@@ -3,12 +3,12 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
-import { ApprovalManager } from "../src/approvals.js";
-import { createApprovalGateExtension } from "../src/durable-ext/approval-gate.js";
-import type { CardAction, Channel, InboundMessage } from "../src/channel.js";
-import { createLogger } from "../src/log.js";
-import type { Substrate } from "../src/substrate.js";
-import { openTestSubstrate } from "./helpers-p1.js";
+import { ApprovalManager } from "../src/approvals.ts";
+import { createApprovalGateExtension } from "../src/durable-ext/approval-gate.ts";
+import type { CardAction, Channel, InboundMessage } from "../src/channel.ts";
+import { createLogger } from "../src/log.ts";
+import type { Substrate } from "../src/substrate.ts";
+import { openTestSubstrate } from "./helpers-p1.ts";
 
 const logger = createLogger("error", () => undefined);
 const OWNER = "ou_owner";

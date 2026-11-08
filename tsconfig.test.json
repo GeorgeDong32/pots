@@ -1,9 +1,35 @@
 {
-  "extends": "./tsconfig.json",
   "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": [
+      "ES2023"
+    ],
+    "types": [
+      "node"
+    ],
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
     "noEmit": true,
-    "rootDir": "."
+    "jsx": "react-jsx",
+    "jsxImportSource": "chat"
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "../Pi-Extension/pi-claude-code-core/extensions/memory/*.ts",
+    "../Pi-Extension/pi-claude-code-core/lib/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "test",
+    "launchd"
+  ]
 }

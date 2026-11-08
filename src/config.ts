@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ModelConfig } from "./substrate.js";
+import type { ModelConfig } from "./substrate.ts";
 
 /**
  * Daemon configuration. Secrets NEVER live here: the Lark app secret and the

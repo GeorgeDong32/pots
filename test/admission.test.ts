@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
-import { createBridge } from "../src/bridge.js";
-import type { CardAction, Channel, InboundMessage } from "../src/channel.js";
-import { createLogger } from "../src/log.js";
-import { checkPolicy, openTestSubstrate } from "./helpers-p1.js";
-import type { ChannelBinding } from "../src/durable-ext/docs.js";
-import type { Substrate } from "../src/substrate.js";
+import { createBridge } from "../src/bridge.ts";
+import type { CardAction, Channel, InboundMessage } from "../src/channel.ts";
+import { createLogger } from "../src/log.ts";
+import { checkPolicy, openTestSubstrate } from "./helpers-p1.ts";
+import type { ChannelBinding } from "../src/durable-ext/docs.ts";
+import type { Substrate } from "../src/substrate.ts";
 
 const logger = createLogger("error", () => undefined);
 

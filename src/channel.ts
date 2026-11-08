@@ -13,9 +13,9 @@ import {
 	createLarkAdapter,
 	encodeThreadId,
 } from "@larksuite/vercel-chat-adapter";
-import type { Logger } from "./log.js";
-import type { ApprovalCardData } from "./approvals.js";
-import { buildApprovalCard } from "./cards.js";
+import type { Logger } from "./log.ts";
+import type { ApprovalCardData } from "./approvals.ts";
+import { buildApprovalCard } from "./cards.ts";
 
 const execFileAsync = promisify(execFile);
 

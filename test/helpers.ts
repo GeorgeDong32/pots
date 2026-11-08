@@ -2,7 +2,7 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openSubstrate, type ModelConfig, type Substrate } from "../src/substrate.js";
+import { openSubstrate, type ModelConfig, type Substrate } from "../src/substrate.ts";
 
 /** A faux-backed substrate over in-memory storage. */
 export async function openTestSubstrate(
