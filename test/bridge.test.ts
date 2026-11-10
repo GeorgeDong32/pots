@@ -19,11 +19,12 @@ class FakeChannel implements Channel {
 	onCardAction(cb: (a: CardAction) => void): void {
 		this.cardActions.push(cb);
 	}
-	async post(chatId: string, chunks: AsyncIterable<string>, done?: (full: string) => void): Promise<void> {
+	async post(chatId: string, chunks: AsyncIterable<string>, done?: (full: string) => void): Promise<boolean> {
 		let full = "";
 		for await (const chunk of chunks) full += chunk;
 		this.posted.push({ chatId, full });
 		done?.(full);
+		return true;
 	}
 	async postText(chatId: string, text: string): Promise<void> {
 		this.texts.push({ chatId, text });
@@ -121,5 +122,19 @@ describe("M2 bridge routing (P0-4.4)", () => {
 		});
 		const settled = await again.wait(BACKGROUND_CONTEXT);
 		expect(settled.status).toBe("done");
+	});
+
+	it("does not post a second card when the same message is delivered again", async () => {
+		const { substrate, faux } = await openTestSubstrate({ homeChatId: "oc_home", ownerOpenId: "ou_owner" });
+		faux.setResponses([fauxAssistantMessage("once")]);
+		const channel = new FakeChannel();
+		createBridge({ substrate, channel, config: { homeChatId: "oc_home", ownerOpenId: "ou_owner" }, logger });
+		channel.deliver(msg({ messageId: "om_once", text: "hello" }));
+		await settlePosted(channel, 1);
+		await new Promise((r) => setTimeout(r, 50));
+		channel.deliver(msg({ messageId: "om_once", text: "hello" }));
+		await new Promise((r) => setTimeout(r, 150));
+		expect(channel.posted).toHaveLength(1);
+		expect(channel.posted[0]?.full).toBe("once");
 	});
 });

@@ -1,5 +1,5 @@
 #!/bin/sh
-# pi-larkd launchd wrapper (F06): launchd's PATH cannot resolve node, so
+# pots launchd wrapper (F06): launchd's PATH cannot resolve node, so
 # source the user's PATH and exec with absolute paths. The daemon runs from
 # TypeScript sources via Node's type TRANSFORM (no build step; the memory
 # semantic core is imported in place from the sibling repo, DEVIATIONS D-9).
@@ -13,7 +13,7 @@ fi
 
 NODE_BIN="$(command -v node)"
 if [ -z "$NODE_BIN" ]; then
-  echo "pi-larkd: node not found in PATH" >&2
+  echo "pots: node not found in PATH" >&2
   exit 1
 fi
 

@@ -4,10 +4,10 @@ import { join } from "node:path";
 import type { ModelConfig } from "./substrate.ts";
 
 /**
- * Daemon configuration. Secrets NEVER live here: the Lark app secret and the
- * model API key are read from the macOS Keychain at startup (F13).
+ * Daemon configuration. Secrets stay in ~/.pots/.env (Hermes style) or, if
+ * those variables are absent, in the macOS Keychain.
  */
-export interface LarkdConfig {
+export interface PotsConfig {
 	/** The single bound chat for P0; all other chats are denied with a notice (F23). */
 	homeChatId: string;
 	/** Owner's Lark open_id (used for card-action authorization in P1; carried from P0). */
@@ -50,18 +50,18 @@ function expectString(value: unknown, field: string): string {
 	return value;
 }
 
-export const DEFAULT_AGENT_HOME = join(homedir(), ".pi-larkd");
+export const DEFAULT_AGENT_HOME = join(homedir(), ".pots");
 export const DEFAULT_DB_PATH = join(DEFAULT_AGENT_HOME, "harness.sqlite");
-export const DEFAULT_LOG_PATH = join(homedir(), "Library", "Logs", "pi-larkd.log");
+export const DEFAULT_LOG_PATH = join(homedir(), "Library", "Logs", "pots.log");
 
-/** Load and validate the JSON config file. Applies defaults; throws on invalid values. */
-export function loadConfig(path: string): LarkdConfig {
+/** Load and validate the JSON config file. Env fills the same fields Hermes keeps in `.env`. */
+export function loadConfig(path: string, env: NodeJS.ProcessEnv = process.env): PotsConfig {
 	const raw: RawConfig = JSON.parse(readFileSync(path, "utf8"));
 	const model = raw.model ?? {};
-	const cfg: LarkdConfig = {
-		homeChatId: expectString(raw.homeChatId, "homeChatId"),
-		ownerOpenId: expectString(raw.ownerOpenId, "ownerOpenId"),
-		botName: typeof raw.botName === "string" && raw.botName ? raw.botName : "pi-larkd",
+	const cfg: PotsConfig = {
+		homeChatId: expectString(raw.homeChatId ?? env.FEISHU_HOME_CHANNEL, "homeChatId"),
+		ownerOpenId: expectString(raw.ownerOpenId ?? firstId(env.FEISHU_ALLOWED_USERS), "ownerOpenId"),
+		botName: typeof raw.botName === "string" && raw.botName ? raw.botName : "pots",
 		model: {
 			provider: expectString(model.provider, "model.provider"),
 			modelId: expectString(model.modelId, "model.modelId"),
@@ -69,6 +69,7 @@ export function loadConfig(path: string): LarkdConfig {
 			contextWindow: Number(model.contextWindow ?? 200_000),
 			maxTokens: Number(model.maxTokens ?? 32_768),
 			reasoning: model.reasoning === true,
+			...(typeof model.keyEnv === "string" && model.keyEnv ? { keyEnv: model.keyEnv } : {}),
 		},
 		dbPath: typeof raw.dbPath === "string" && raw.dbPath ? raw.dbPath : DEFAULT_DB_PATH,
 		agentHome: typeof raw.agentHome === "string" && raw.agentHome ? raw.agentHome : DEFAULT_AGENT_HOME,
@@ -76,7 +77,7 @@ export function loadConfig(path: string): LarkdConfig {
 			service:
 				typeof raw.keychain?.service === "string" && raw.keychain.service
 					? raw.keychain.service
-					: "pi-larkd",
+					: "pots",
 			larkSecretAccount:
 				typeof raw.keychain?.larkSecretAccount === "string" && raw.keychain.larkSecretAccount
 					? raw.keychain.larkSecretAccount
@@ -99,4 +100,9 @@ export function loadConfig(path: string): LarkdConfig {
 		throw new Error('config: "homeChatId" must be a Lark chat id (oc_...)');
 	}
 	return cfg;
+}
+
+function firstId(value: string | undefined): string | undefined {
+	const id = value?.split(/[,\s]+/).find((part) => part.length > 0);
+	return id;
 }

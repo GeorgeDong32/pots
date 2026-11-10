@@ -12,7 +12,7 @@
 # Usage: scripts/upgrade.sh <new-version> [--dry-run]
 set -eu
 
-LABEL="dev.gd32.pi-larkd"
+LABEL="dev.gd32.pots"
 REPO_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 VERSION="${1:?usage: upgrade.sh <new-version> [--dry-run]}"
 DRY_RUN="${2:-}"
@@ -27,12 +27,12 @@ step "1/7 bootout the daemon"
 step "2/7 snapshot the database (rollback anchor)"
 if [ "$DRY_RUN" != "--dry-run" ]; then
   STAMP="$(date +%Y%m%d-%H%M%S)"
-  mkdir -p "$HOME/.pi-larkd/backups"
-  cp "$HOME/.pi-larkd/harness.sqlite" "$HOME/.pi-larkd/backups/harness-$STAMP.sqlite" 2>/dev/null || true
-  [ -f "$HOME/.pi-larkd/harness.sqlite-wal" ] && cp "$HOME/.pi-larkd/harness.sqlite-wal" "$HOME/.pi-larkd/backups/harness-$STAMP.sqlite-wal" || true
-  echo "   snapshot: ~/.pi-larkd/backups/harness-$STAMP.sqlite"
+  mkdir -p "$HOME/.pots/backups"
+  cp "$HOME/.pots/harness.sqlite" "$HOME/.pots/backups/harness-$STAMP.sqlite" 2>/dev/null || true
+  [ -f "$HOME/.pots/harness.sqlite-wal" ] && cp "$HOME/.pots/harness.sqlite-wal" "$HOME/.pots/backups/harness-$STAMP.sqlite-wal" || true
+  echo "   snapshot: ~/.pots/backups/harness-$STAMP.sqlite"
 else
-  echo "   (would snapshot ~/.pi-larkd/harness.sqlite)"
+  echo "   (would snapshot ~/.pots/harness.sqlite)"
 fi
 
 step "3/7 bump the exact pin"

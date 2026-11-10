@@ -43,7 +43,7 @@ export function textAnswer(text: string): ReturnType<typeof fauxAssistantMessage
 }
 
 export function tmpDir(): string {
-	return mkdtempSync(join(tmpdir(), "pi-larkd-test-"));
+	return mkdtempSync(join(tmpdir(), "pots-test-"));
 }
 
 export function cleanupDir(dir: string): void {

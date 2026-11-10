@@ -1,4 +1,4 @@
-# pi-larkd 完工报告（P0→P3 全案实施）
+# pots 完工报告（P0→P3 全案实施）
 
 日期：2026-11-09 · repo：`~/Coding/pi-larkd`（独立，本地 git，4 commits，无远程）
 基准：spec `specs/pi-larkd/`（r2 PASS 可实施）+ pi-durable@1.5.0 exact pin
@@ -21,7 +21,7 @@
   断网 30s backfill 实拉（bot 身份 JSON 字段实形核对）、3s ack、优雅关闭半流卡终态、单例互斥
 - **B 系列**：双 channel 并行重叠断言、真实卡片渲染与点击（operatorOpenId 是否 ou_ 形）、
   审批跨 launchctl kickstart、board 巡检真实工作区、远程控制实测
-- **C 系列**：pi ↔ pi-larkd 用户层记忆双向可见（同文件同锁）
+- **C 系列**：pi ↔ pots 用户层记忆双向可见（同文件同锁）
 - **D 系列**：CPA 真模型 soak 3conv×30min、24h RSS/WAL 曲线、晨报连续 3 日准点、真实 pin 升级
 
 ## 3. 偏差（DEVIATIONS.md，11 条，均有对照+理由+最小替代）

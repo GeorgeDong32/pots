@@ -46,7 +46,7 @@ type MorningCheckpoint = { phase: "wait"; dueAt: number; day: string } | { phase
 
 export function createMorningReportTask(deps: CronDeps) {
 	return defineTask<Record<string, never>, MorningCheckpoint, null, object>({
-		name: "pi-larkd.morning-report",
+		name: "pots.morning-report",
 		version: 1,
 		initial: () => {
 			const { at, day } = nextMorningReport();
@@ -87,7 +87,7 @@ export interface ReminderInput {
 
 export function createReminderTask(post: (text: string) => Promise<void>) {
 	return defineTask<ReminderInput, { phase: "wait" } | { phase: "deliver" }, null, object>({
-		name: "pi-larkd.reminder",
+		name: "pots.reminder",
 		version: 1,
 		initial: () => ({ phase: "wait" }),
 		phases: {
@@ -124,10 +124,10 @@ export function createReminderExtension(reminderTask: ReturnType<typeof createRe
 			return { output: [{ type: "text", text: `reminder set for ${new Date(args.at).toLocaleString("zh-CN")}` }] };
 		},
 	});
-	return defineExtension({ name: "pi-larkd-remind", tools: [remind], tasks: [reminderTask] });
+	return defineExtension({ name: "pots-remind", tools: [remind], tasks: [reminderTask] });
 }
 
 /** Registry wrapper for the daemon-created morning task (import gate). */
 export function createCronExtension(morningTask: ReturnType<typeof createMorningReportTask>): Extension {
-	return defineExtension({ name: "pi-larkd-cron", tasks: [morningTask] });
+	return defineExtension({ name: "pots-cron", tasks: [morningTask] });
 }

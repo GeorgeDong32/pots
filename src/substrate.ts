@@ -66,6 +66,8 @@ export interface ModelConfig {
 	contextWindow: number;
 	maxTokens: number;
 	reasoning?: boolean;
+	/** Environment variable that holds the API key. The value stays out of this file. */
+	keyEnv?: string;
 }
 
 export interface SubstrateConfig {
@@ -92,11 +94,15 @@ export type { ChannelBinding, ChannelPolicy, ApprovalState } from "./durable-ext
 import {
 	ApprovalDoc,
 	BindingsDoc,
+	DeliveryDoc,
 	PendingApprovalsDoc,
+	PendingDeliveriesDoc,
+	RoutineSessionsDoc,
 	SessionApprovalsDoc,
 	sessionApprovalKey,
 	type ApprovalState,
 	type ChannelBinding,
+	type DeliveryState,
 } from "./durable-ext/docs.ts";
 
 export type AdmitResult =
@@ -124,7 +130,7 @@ export function checkPolicy(
  * (P0-3.4: milliseconds stored; both channels use the same server clock).
  */
 export const WatermarkDoc = defineDocFamily<{ watermarkMs: number; chatId: string }, string>({
-	kind: "pi-larkd.watermark",
+	kind: "pots.watermark",
 	version: 1,
 	scope: "session",
 	family: true,
@@ -202,19 +208,21 @@ export interface Substrate {
 	close(): Promise<void>;
 	/** Settles after close(), or after a storage failure closes the harness. */
 	readonly closed: Promise<SessionEnd>;
-	/** Diagnostic dump for `pi-larkd status` and tests. */
+	/** Diagnostic dump for `pots status` and tests. */
 	inspect(): Promise<{ conversations: string[]; usage: Record<string, unknown> }>;
 	// ----- P1: routing table -----
 	/** The routing table and its home chat (P0 migration lands homeChatId as row one). */
 	bindings(): Promise<{ bindings: Record<string, ChannelBinding>; homeChatId: string }>;
 	/** Create or replace a binding in one commit (channel_bind tool / DM natural language). */
 	bindChannel(input: { chatId: string; cwd: string; boardPath?: string; isGroup: boolean }): Promise<string>;
-	/** Resolve the conversation bound to a chat (root fallback for unbound chats). */
+	/** Resolve the conversation bound to a chat root. */
 	bindingConversation(chatId: string): Promise<Conversation>;
+	/** Resolve the conversation for a chat root or one Feishu thread. */
+	sessionConversation(chatId: string, threadId?: string): Promise<Conversation>;
 	/** Atomic admission (P1-1.2): policy + binding read + submit + watermark in ONE commit. */
 	admitBinding(
 		chatId: string,
-		msg: { messageId: string; text: string; senderId: string; isBot: boolean; isMention: boolean; sentAt: number },
+		msg: { messageId: string; text: string; senderId: string; isBot: boolean; isMention: boolean; sentAt: number; threadId?: string },
 	): Promise<AdmitResult>;
 	/** Reverse lookup: which chat owns a conversation (approval cards route back). */
 	chatOfConversation(conversationId: number): Promise<string | undefined>;
@@ -229,10 +237,19 @@ export interface Substrate {
 	createApprovalPending(state: ApprovalState & { approvalId: string }): Promise<boolean>;
 	/** Verdict with the pending-guard: only a pending approval is written (R2-3). */
 	decideApproval(approvalId: string, status: ApprovalState["status"], decidedBy: string): Promise<boolean>;
+	/** A spent approval (once, session, deny, timeout) becomes pending again. */
+	reopenApproval(approvalId: string, deadlineAt: number): Promise<boolean>;
 	/** All pending approval ids with their deadlines (janitor + startup sweep). */
 	pendingApprovals(): Promise<Array<{ approvalId: string; deadlineAt: number; chatId: string }>>;
 	/** Record an "Always" session approval (4h TTL, exact digest; F21). */
 	setSessionApproval(conversationId: number, toolName: string, digest: string, approvalId: string): Promise<void>;
+	/** Outbox. The first writer owns the request; a repeat returns false. */
+	recordDelivery(state: DeliveryState): Promise<boolean>;
+	deliveryOf(requestId: string): Promise<DeliveryState | undefined>;
+	markDeliverySent(requestId: string): Promise<void>;
+	pendingDeliveries(): Promise<DeliveryState[]>;
+	/** A conversation used only by one routine. cwd and chatId are remembered for tools and approval cards. */
+	routineConversation(routineId: string, place?: { cwd?: string; chatId?: string }): Promise<Conversation>;
 	// ----- P1: M4 patrol task lifecycle -----
 	/** Create a singleton task owned by the root conversation if none live. */
 	ensureRootTask(task: TaskLike): Promise<boolean>;
@@ -295,7 +312,7 @@ export async function openSubstrate(cfg: SubstrateConfig): Promise<Substrate> {
 	// P0 registry: read-only. `read` is an independent tool factory — nothing installs
 	// write/edit/bash automatically, so not installing them IS the security posture (F05).
 	const registry = createRegistry();
-	registry.install(defineExtension({ name: "pi-larkd-readonly", tools: [createReadTool()] }));
+	registry.install(defineExtension({ name: "pots-readonly", tools: [createReadTool()] }));
 	for (const ext of cfg.extraExtensions ?? []) registry.install(ext);
 
 	const agentHome = cfg.agentHome;
@@ -337,6 +354,31 @@ export async function openSubstrate(cfg: SubstrateConfig): Promise<Substrate> {
 			// Corrupt binding (conversation vanished): degrade to root rather than fail.
 		}
 		return rootConversation();
+	}
+
+	/** Channel root uses the binding conversation. Each Feishu thread gets its own conversation. */
+	async function sessionConversation(chatId: string, threadId?: string): Promise<Conversation> {
+		if (!threadId) return bindingConversation(chatId);
+		const table = await bindingsSnapshot();
+		const known = table?.bindings[chatId]?.threads?.[threadId];
+		if (known !== undefined) {
+			const existing = await harness.conversation(convId(known), BACKGROUND_CONTEXT);
+			if (existing !== undefined) return existing;
+		}
+		const created = await harness.commit(async (tx) => {
+			const doc = await tx.doc(BindingsDoc);
+			const binding = doc.bindings[chatId];
+			if (binding === undefined) return undefined;
+			const threads = { ...(binding.threads ?? {}) };
+			if (threads[threadId] !== undefined) return threads[threadId];
+			const record = await tx.createConversation({ ownership: { kind: "ownerless" } });
+			await configure(tx, record.id, { model: modelRef, cwd: binding.cwd });
+			threads[threadId] = Number(record.id);
+			doc.bindings[chatId] = { ...binding, threads };
+			return Number(record.id);
+		}, BACKGROUND_CONTEXT);
+		if (created === undefined) return rootConversation();
+		return (await harness.conversation(convId(created), BACKGROUND_CONTEXT)) ?? rootConversation();
 	}
 
 	/** P0→P1 migration: homeChatId becomes the table's first row, bound to the ROOT conversation. */
@@ -482,19 +524,19 @@ export async function openSubstrate(cfg: SubstrateConfig): Promise<Substrate> {
 				return `bound ${chatId} → conversation ${conversationId} (cwd ${cwd}${boardPath ? `, board ${boardPath}` : ""})`;
 			}, BACKGROUND_CONTEXT),
 		bindingConversation: (chatId: string) => bindingConversation(chatId),
-		admitBinding: (async (chatId: string, msg: { messageId: string; text: string; senderId: string; isBot: boolean; isMention: boolean; sentAt: number }) => {
+		sessionConversation: (chatId: string, threadId?: string) => sessionConversation(chatId, threadId),
+		admitBinding: (async (chatId: string, msg: { messageId: string; text: string; senderId: string; isBot: boolean; isMention: boolean; sentAt: number; threadId?: string }) => {
 			for (let attempt = 0; attempt < 2; attempt++) {
-				const conv = await bindingConversation(chatId);
+				const conv = await sessionConversation(chatId, msg.threadId);
 				try {
 					return await harness.commit(async (tx) => {
 						const doc = await tx.doc(BindingsDoc);
 						const binding = doc.bindings[chatId];
 						if (binding === undefined) return { kind: "unbound" } as AdmitResult;
-						// Policy verdict on the fresh in-commit state; a denial writes nothing.
 						const denial = checkPolicy(binding, msg);
 						if (denial !== null) return { kind: "denied", reason: denial } as AdmitResult;
-						if (binding.conversationId !== Number(conv.id)) throw new BindingChanged();
-						// F10: admission is the first table write; the watermark doc write follows.
+						const expected = msg.threadId ? binding.threads?.[msg.threadId] : binding.conversationId;
+						if (expected !== Number(conv.id)) throw new BindingChanged();
 						const submissionId = await conv.submit(tx, {
 							type: "input",
 							content: msg.text,
@@ -516,6 +558,13 @@ export async function openSubstrate(cfg: SubstrateConfig): Promise<Substrate> {
 			const table = await bindingsSnapshot();
 			for (const binding of Object.values(table?.bindings ?? {})) {
 				if (binding.conversationId === conversationId) return binding.chatId;
+				for (const threadConversation of Object.values(binding.threads ?? {})) {
+					if (threadConversation === conversationId) return binding.chatId;
+				}
+			}
+			const routines = await harness.snapshot(RoutineSessionsDoc, BACKGROUND_CONTEXT);
+			for (const session of Object.values(routines?.sessions ?? {})) {
+				if (session.conversationId === conversationId && session.chatId) return session.chatId;
 			}
 			return undefined;
 		},
@@ -583,6 +632,20 @@ export async function openSubstrate(cfg: SubstrateConfig): Promise<Substrate> {
 				index.approvalIds = index.approvalIds.filter((id) => id !== approvalId);
 				return true;
 			}, BACKGROUND_CONTEXT),
+		reopenApproval: (approvalId, deadlineAt) =>
+			harness.commit(async (tx) => {
+				const doc = await tx.doc(ApprovalDoc, approvalId, approvalId);
+				if (doc.status === "pending" || doc.digest === "") return false;
+				doc.status = "pending";
+				doc.deadlineAt = deadlineAt;
+				delete doc.decidedAt;
+				delete doc.decidedBy;
+				const index = await tx.doc(PendingApprovalsDoc);
+				if (!index.approvalIds.includes(approvalId)) {
+					index.approvalIds = [...index.approvalIds, approvalId];
+				}
+				return true;
+			}, BACKGROUND_CONTEXT),
 		pendingApprovals: async () => {
 			const index = await harness.snapshot(PendingApprovalsDoc, BACKGROUND_CONTEXT);
 			const out: Array<{ approvalId: string; deadlineAt: number; chatId: string }> = [];
@@ -601,6 +664,65 @@ export async function openSubstrate(cfg: SubstrateConfig): Promise<Substrate> {
 				doc.expiresAt = Date.now() + SESSION_APPROVAL_TTL_MS;
 				doc.approvalId = approvalId;
 			}, BACKGROUND_CONTEXT),
+		recordDelivery: (state) =>
+			harness.commit(async (tx) => {
+				const doc = await tx.doc(DeliveryDoc, state.requestId, state.requestId);
+				if (doc.updatedAt > 0) return false;
+				doc.requestId = state.requestId;
+				doc.submissionId = state.submissionId;
+				doc.chatId = state.chatId;
+				doc.threadId = state.threadId;
+				doc.status = "pending";
+				doc.updatedAt = Date.now();
+				const index = await tx.doc(PendingDeliveriesDoc);
+				if (!index.requestIds.includes(state.requestId)) {
+					index.requestIds = [...index.requestIds, state.requestId];
+				}
+				return true;
+			}, BACKGROUND_CONTEXT),
+		deliveryOf: async (requestId) => {
+			const doc = await harness.snapshot(DeliveryDoc, requestId, BACKGROUND_CONTEXT);
+			if (doc === undefined || doc.updatedAt === 0) return undefined;
+			return doc;
+		},
+		markDeliverySent: (requestId) =>
+			harness.commit(async (tx) => {
+				const doc = await tx.doc(DeliveryDoc, requestId, requestId);
+				if (doc.updatedAt === 0) return;
+				doc.status = "sent";
+				doc.updatedAt = Date.now();
+				const index = await tx.doc(PendingDeliveriesDoc);
+				index.requestIds = index.requestIds.filter((id) => id !== requestId);
+			}, BACKGROUND_CONTEXT),
+		pendingDeliveries: async () => {
+			const index = await harness.snapshot(PendingDeliveriesDoc, BACKGROUND_CONTEXT);
+			const out: DeliveryState[] = [];
+			for (const requestId of index?.requestIds ?? []) {
+				const doc = await harness.snapshot(DeliveryDoc, requestId, BACKGROUND_CONTEXT);
+				if (doc !== undefined && doc.status === "pending" && doc.updatedAt > 0) out.push(doc);
+			}
+			return out;
+		},
+		routineConversation: async (routineId, place) => {
+			const cwd = place?.cwd || agentHome;
+			const chatId = place?.chatId || "";
+			const existing = await harness.snapshot(RoutineSessionsDoc, BACKGROUND_CONTEXT);
+			const known = existing?.sessions[routineId];
+			if (known !== undefined) {
+				const conv = await harness.conversation(convId(known.conversationId), BACKGROUND_CONTEXT);
+				if (conv !== undefined) return conv;
+			}
+			const created = await harness.commit(async (tx) => {
+				const doc = await tx.doc(RoutineSessionsDoc);
+				const current = doc.sessions[routineId];
+				if (current !== undefined) return current.conversationId;
+				const record = await tx.createConversation({ ownership: { kind: "ownerless" } });
+				await configure(tx, record.id, { model: modelRef, cwd });
+				doc.sessions = { ...doc.sessions, [routineId]: { conversationId: Number(record.id), cwd, chatId } };
+				return Number(record.id);
+			}, BACKGROUND_CONTEXT);
+			return (await harness.conversation(convId(created), BACKGROUND_CONTEXT)) ?? rootConversation();
+		},
 		ensureRootTask: async (task) => {
 			const root = await rootConversation();
 			const page = await harness.commit(

@@ -15,7 +15,7 @@ export function createMemoryV1Deps(): MemoryV1Deps {
 	const pathsOf = (cwd: string | undefined) => resolveMemoryPaths(cwd ?? process.cwd());
 
 	return {
-		indexHeader: (cwd, maxBytes) => indexHeader(cwd, maxBytes),
+		indexHeader: (cwd, maxBytes, options) => indexHeader(cwd, maxBytes, undefined, options),
 		async recall(query, cwd) {
 			const result = await sessionRecall({ query, cwd: cwd ?? process.cwd() });
 			if (result.hits.length === 0) {

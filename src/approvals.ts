@@ -32,7 +32,7 @@ export interface ApprovalManagerDeps {
 
 export class ApprovalManager implements ApprovalGate {
 	private substrate: Substrate | undefined;
-	private readonly waiters = new Map<string, (decision: GateDecision) => void>();
+	private readonly waiters = new Map<string, Array<(decision: GateDecision) => void>>();
 	private sweepTimer: ReturnType<typeof setInterval> | undefined;
 
 	constructor(private readonly deps: ApprovalManagerDeps) {}
@@ -49,7 +49,9 @@ export class ApprovalManager implements ApprovalGate {
 
 	stop(): void {
 		if (this.sweepTimer !== undefined) clearInterval(this.sweepTimer);
-		for (const resolve of this.waiters.values()) resolve({ allow: false, block: "daemon shutting down" });
+		for (const resolvers of this.waiters.values()) {
+			for (const resolve of resolvers) resolve({ allow: false, block: "daemon shutting down" });
+		}
 		this.waiters.clear();
 	}
 
@@ -64,12 +66,29 @@ export class ApprovalManager implements ApprovalGate {
 		const approvalId = `${conversationId}:${digestHash(digest)}`;
 		const existing = await substrate.getApproval(approvalId);
 
-		if (existing !== undefined) {
-			if (existing.status !== "pending") return this.verdictOf(existing.status);
+		if (existing !== undefined && existing.digest !== "" && existing.digest !== digest) {
+			return { allow: false, block: "approval digest mismatch" };
+		}
+
+		if (existing !== undefined && existing.status === "pending") {
 			if (Date.now() >= existing.deadlineAt) return { allow: false, block: "approval timed out" };
 			// Crash re-entry (P1-3.3.3): re-send the card with the SAME approvalId, rebuild the await.
 			await this.sendCard({ ...existing, approvalId });
 			return this.awaitVerdict(approvalId);
+		}
+
+		if (existing !== undefined) {
+			// Once, session, deny, and timeout are spent. The next identical call asks again.
+			const deadlineAt = Date.now() + (this.deps.timeoutMs ?? APPROVAL_TIMEOUT_MS);
+			const reopened = await substrate.reopenApproval(approvalId, deadlineAt);
+			const current = reopened
+				? { ...existing, status: "pending" as const, deadlineAt, approvalId }
+				: await substrate.getApproval(approvalId);
+			if (current !== undefined && current.status === "pending") {
+				await this.sendCard({ ...current, approvalId });
+				return this.awaitVerdict(approvalId);
+			}
+			return { allow: false, block: "approval could not be reopened" };
 		}
 
 		const chatId = (await substrate.chatOfConversation(conversationId)) ?? "";
@@ -176,14 +195,16 @@ export class ApprovalManager implements ApprovalGate {
 
 	private awaitVerdict(approvalId: string): Promise<GateDecision> {
 		return new Promise<GateDecision>((resolve) => {
-			this.waiters.set(approvalId, resolve);
+			const waiting = this.waiters.get(approvalId) ?? [];
+			waiting.push(resolve);
+			this.waiters.set(approvalId, waiting);
 		});
 	}
 
 	private resolveWaiter(approvalId: string, decision: GateDecision): void {
-		const waiter = this.waiters.get(approvalId);
+		const waiting = this.waiters.get(approvalId) ?? [];
 		this.waiters.delete(approvalId);
-		waiter?.(decision);
+		for (const resolve of waiting) resolve(decision);
 	}
 
 	private verdictOf(status: ApprovalState["status"]): GateDecision {

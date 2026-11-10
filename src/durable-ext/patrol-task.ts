@@ -36,7 +36,7 @@ const POSTED_RING = 20;
 
 export function createPatrolTask(deps: PatrolDeps) {
 	return defineTask<PatrolInput, PatrolCheckpoint, null, object>({
-		name: "pi-larkd.patrol",
+		name: "pots.patrol",
 		version: 1,
 		initial: () => ({ phase: "poll" }),
 		phases: {
@@ -144,5 +144,5 @@ export function hashString(text: string): string {
 
 /** Registry wrapper so app code never imports pi-durable (import gate). */
 export function createPatrolExtension(task: ReturnType<typeof createPatrolTask>): Extension {
-	return defineExtension({ name: "pi-larkd-patrol-ext", tasks: [task] });
+	return defineExtension({ name: "pots-patrol-ext", tasks: [task] });
 }

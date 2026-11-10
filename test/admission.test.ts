@@ -138,11 +138,12 @@ describe("remote control (P1-4)", () => {
 			this.messageCb = cb;
 		}
 		onCardAction(_cb: (a: CardAction) => void): void {}
-		async post(chatId: string, chunks: AsyncIterable<string>, done?: (full: string) => void): Promise<void> {
+		async post(chatId: string, chunks: AsyncIterable<string>, done?: (full: string) => void): Promise<boolean> {
 			let full = "";
 			for await (const c of chunks) full += c;
 			this.posted.push({ chatId, full });
 			done?.(full);
+			return true;
 		}
 		async postText(_chatId: string, text: string): Promise<void> {
 			this.texts.push(text);

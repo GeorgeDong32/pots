@@ -5,6 +5,8 @@
  * approval. The hook only awaits a verdict; all document writes happen in the
  * app-side manager via `substrate.commit` (R2-1: HookApi has no commit).
  */
+import { realpath } from "node:fs/promises";
+import path from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	ToolTask,
@@ -14,7 +16,7 @@ import {
 	type HookApi,
 	type ToolHookCall,
 } from "@earendil-works/pi-durable";
-import { SessionApprovalsDoc, sessionApprovalKey } from "./docs.ts";
+import { BindingsDoc, SessionApprovalsDoc, sessionApprovalKey } from "./docs.ts";
 
 export interface GateDecision {
 	allow: boolean;
@@ -33,19 +35,15 @@ export interface GateCall {
 	callId: string;
 }
 
-/** Tools allowed without approval (P1-3.1 + P2-1.3): read-only monitors plus the
- * memory tools, which are path-jailed by construction (memory_write only
- * appends under <agentHome>/memory; consolidate/apply run through the
- * cc-core store validator under the layer lock). */
-const READ_ONLY_WHITELIST = new Set([
+/** Tools allowed without approval. Writes, including memory_write and
+ * memory_consolidate, stay behind the card. session_recall only searches. */
+export const READ_ONLY_WHITELIST = new Set([
 	"read",
 	"board_status",
 	"board_tasks",
 	"watch_run",
 	"workspace_list",
-	"memory_write",
 	"session_recall",
-	"memory_consolidate",
 ]);
 
 /**
@@ -59,7 +57,7 @@ export const SENSITIVE_PATH_PATTERNS: readonly RegExp[] = [
 	/\.aws/i,
 	/\.gnupg/i,
 	/harness\.sqlite/i,
-	/\.pi-larkd\/daemon\.lock/i,
+	/\.pots\/daemon\.lock/i,
 	/id_rsa/i,
 	/id_ed25519/i,
 	/\.env\b/i,
@@ -83,10 +81,36 @@ export function callDigest(call: GateCall): string {
 	return `${call.name}:${stable(call.arguments)}`;
 }
 
+/** `read` may stay inside the conversation cwd, after symlinks are resolved. */
+export async function assessReadPath(cwd: string, requested: string): Promise<string | undefined> {
+	const root = await realpath(cwd).catch(() => path.resolve(cwd));
+	const lexical = path.resolve(root, requested);
+	const target = await realpath(lexical).catch(() => lexical);
+	const relative = path.relative(root, target);
+	if (relative.startsWith("..") || path.isAbsolute(relative)) return "path outside workspace";
+	const readable = { name: "read", arguments: { path: target }, callId: "" };
+	if (sensitivePathHit(readable) || sensitivePathHit({ name: "read", arguments: { path: requested }, callId: "" })) {
+		return "sensitive path: denied without approval";
+	}
+	return;
+}
+
+async function cwdFor(api: HookApi): Promise<string | undefined> {
+	const table = await api.snapshot(BindingsDoc, BACKGROUND_CONTEXT);
+	const conversationId = Number(api.conversationId);
+	for (const binding of Object.values(table?.bindings ?? {})) {
+		if (binding.conversationId === conversationId) return binding.cwd;
+		for (const threadConversation of Object.values(binding.threads ?? {})) {
+			if (threadConversation === conversationId) return binding.cwd;
+		}
+	}
+	return;
+}
+
 /** The M5 extension: installed once; every conversation selecting it is gated. */
 export function createApprovalGateExtension(gate: ApprovalGate): Extension {
 	return defineExtension({
-		name: "pi-larkd-approval-gate",
+		name: "pots-approval-gate",
 		hooks: [
 			hook(ToolTask, {
 				beforeTool: async (
@@ -101,6 +125,16 @@ export function createApprovalGateExtension(gate: ApprovalGate): Extension {
 					// 1. Hard refuse: sensitive paths never reach approval.
 					if (sensitivePathHit(gateCall)) {
 						return { block: "sensitive path: denied without approval" };
+					}
+					if (gateCall.name === "read") {
+						const requested = gateCall.arguments.path;
+						if (typeof requested !== "string" || requested.length === 0) {
+							return { block: "read path required" };
+						}
+						const cwd = await cwdFor(api);
+						if (cwd === undefined) return { block: "read requires a workspace" };
+						const reason = await assessReadPath(cwd, requested);
+						if (reason !== undefined) return { block: reason };
 					}
 					// 2. Read-only whitelist passes.
 					if (READ_ONLY_WHITELIST.has(gateCall.name)) return undefined;

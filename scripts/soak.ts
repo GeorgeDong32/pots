@@ -24,7 +24,7 @@ const flag = (name: string, fallback: number): number => {
 const convs = flag("convs", 3);
 const seconds = flag("seconds", 60);
 const paceMs = flag("pace", 200); // per-worker think time: realistic pacing
-const dbPath = flag("db", 0) || `/tmp/pi-larkd-soak-${Date.now()}.sqlite`;
+const dbPath = flag("db", 0) || `/tmp/pots-soak-${Date.now()}.sqlite`;
 
 const RSS_LIMIT_MB = 400;
 const WAL_LIMIT_MB = 200;

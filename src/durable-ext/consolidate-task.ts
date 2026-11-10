@@ -19,7 +19,7 @@ export type ConsolidateCheckpoint = { phase: "wait" } | { phase: "check" };
 
 export function createConsolidateDebounceTask(v1: MemoryV1Deps, debounceMs = DEBOUNCE_MS) {
 	return defineTask<ConsolidateInput, ConsolidateCheckpoint, null, object>({
-		name: "pi-larkd.memory-consolidate-debounce",
+		name: "pots.memory-consolidate-debounce",
 		version: 1,
 		initial: () => ({ phase: "wait" }),
 		phases: {

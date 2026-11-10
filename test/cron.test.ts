@@ -50,7 +50,7 @@ describe("reminder task survives and delivers (P3-3.2)", () => {
 		});
 		closed.push(substrate);
 		await substrate.ensureRootTask({
-			definition: { name: "pi-larkd.reminder", version: 1 },
+			definition: { name: "pots.reminder", version: 1 },
 		} as never).catch(() => undefined);
 		// Create the reminder directly (tool path is M5-gated in production).
 		const root = await substrate.root();
@@ -99,7 +99,7 @@ describe("morning report end-to-end with short clock", () => {
 		// initial() sleeps to the next 09:00; force the deliver phase by
 		// waiting would take hours — instead verify the initial wait armed:
 		const page = await substrate.commit(
-			(tx) => tx.scanTasks({ kind: "pi-larkd.morning-report", conversationId: root.id as never }, 1),
+			(tx) => tx.scanTasks({ kind: "pots.morning-report", conversationId: root.id as never }, 1),
 			BACKGROUND_CONTEXT,
 		);
 		const state = page.items[0]?.state;

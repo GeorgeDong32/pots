@@ -58,6 +58,25 @@ describe("burst merging (P1-1.6)", () => {
 		expect(out.map((m) => m.messageId)).toEqual(["x", "y"]);
 	});
 
+	it("does not merge messages from different threads", async () => {
+		const out: InboundMessage[] = [];
+		const merger = createBurstMerger({ ...DEFAULT_BURST, silenceMs: 30 }, (m) => out.push(m));
+		merger.push(msg({ messageId: "a", text: "one", threadId: "om_a" }));
+		merger.push(msg({ messageId: "b", text: "two", threadId: "om_b" }));
+		await new Promise((r) => setTimeout(r, 60));
+		expect(out.map((item) => item.threadId)).toEqual(["om_a", "om_b"]);
+		expect(out.map((item) => item.text)).toEqual(["one", "two"]);
+	});
+	it("keeps a mention that arrived anywhere in the batch", async () => {
+		const out: InboundMessage[] = [];
+		const merger = createBurstMerger({ ...DEFAULT_BURST, silenceMs: 30 }, (m) => out.push(m));
+		merger.push(msg({ messageId: "om_1", text: "a", isMention: true }));
+		merger.push(msg({ messageId: "om_2", text: "b", isMention: false }));
+		await new Promise((r) => setTimeout(r, 60));
+		expect(out[0]?.isMention).toBe(true);
+		expect(out[0]?.messageId).toBe("om_1..om_2");
+	});
+
 	it("single-message batches keep the original id (requestId idempotency preserved)", async () => {
 		const out: InboundMessage[] = [];
 		const merger = createBurstMerger({ ...DEFAULT_BURST, silenceMs: 30 }, (m) => out.push(m));

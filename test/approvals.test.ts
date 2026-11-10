@@ -4,7 +4,8 @@ import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import { ApprovalManager } from "../src/approvals.ts";
-import { createApprovalGateExtension } from "../src/durable-ext/approval-gate.ts";
+import { callDigest, createApprovalGateExtension } from "../src/durable-ext/approval-gate.ts";
+import { SessionApprovalsDoc, sessionApprovalKey } from "../src/durable-ext/docs.ts";
 import type { CardAction, Channel, InboundMessage } from "../src/channel.ts";
 import { createLogger } from "../src/log.ts";
 import type { Substrate } from "../src/substrate.ts";
@@ -23,11 +24,12 @@ class ApprovalChannel implements Channel {
 		this.messageCb = cb;
 	}
 	onCardAction(_cb: (a: CardAction) => void): void {}
-	async post(chatId: string, chunks: AsyncIterable<string>, done?: (full: string) => void): Promise<void> {
+	async post(chatId: string, chunks: AsyncIterable<string>, done?: (full: string) => void): Promise<boolean> {
 		let full = "";
 		for await (const c of chunks) full += c;
 		this.posted.push({ chatId, full });
 		done?.(full);
+		return true;
 	}
 	async postText(_chatId: string, text: string): Promise<void> {
 		this.texts.push(text);
@@ -240,5 +242,36 @@ describe("M5 approval flow (P1-3)", () => {
 		expect((await decision).allow).toBe(true);
 		const state = await substrate.getApproval(channel.cards[1]?.approvalId as string);
 		expect(state?.status).toBe("approved_once");
+	});
+
+	it("an expired Always grant asks again instead of staying allowed", async () => {
+		const { substrate, faux, manager, channel } = await setup();
+		const args = { path: "/tmp/ttl.txt", content: "1" };
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("write_file", args)], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done1"),
+		]);
+		const conv = await substrate.root();
+		const s1 = await substrate.submit(conv, { type: "input", content: "go", requestId: "feishu:ap-ttl-1" });
+		void s1.wait(BACKGROUND_CONTEXT).catch(() => undefined);
+		await waitFor(() => channel.cards.length === 1);
+		await channel.click(manager, "approve_session", channel.cards[0]?.approvalId as string, OWNER);
+		await s1.wait(BACKGROUND_CONTEXT);
+
+		const key = sessionApprovalKey(Number(conv.id), "write_file", callDigest({ name: "write_file", arguments: args, callId: "ttl" }));
+		await substrate.commit(async (tx) => {
+			const doc = await tx.doc(SessionApprovalsDoc, key, key);
+			doc.expiresAt = 1;
+		});
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("write_file", args)], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done2"),
+		]);
+		const s2 = await substrate.submit(conv, { type: "input", content: "again", requestId: "feishu:ap-ttl-2" });
+		void s2.wait(BACKGROUND_CONTEXT).catch(() => undefined);
+		await waitFor(() => channel.cards.length === 2);
+		await channel.click(manager, "deny", channel.cards[1]?.approvalId as string, OWNER);
+		await s2.wait(BACKGROUND_CONTEXT);
+		expect(channel.cards.length).toBe(2);
 	});
 });

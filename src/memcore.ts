@@ -31,7 +31,7 @@ export type { MemoryOp, OpsOutcome, LayerStats, MemoryEntry, MemoryPaths, Regist
 
 export { applyMemoryOps, completeMemoryOps, completeText, runConsolidation, reindex, scanMemoryDir, resolveMemoryPaths, sessionRecall, layerStats };
 
-/** RegistryLike over pi-larkd's single provider (Keychain-held key). */
+/** RegistryLike over pots's single provider (Keychain-held key). */
 export function registryLike(getKey: () => string | undefined, providerId: string): RegistryLike {
 	return {
 		getApiKeyAndHeaders: async (model: Model<Api>) =>
@@ -70,7 +70,12 @@ function safeReindex(dir: string): ReturnType<typeof reindex> {
 }
 
 /** Static index header within a byte budget (DP-P2-1 mode b; see DEVIATIONS). */
-export function indexHeader(cwd: string | undefined, maxBytes: number, home?: string): string {
+export function indexHeader(
+	cwd: string | undefined,
+	maxBytes: number,
+	home?: string,
+	options?: { includeUser?: boolean },
+): string {
 	const paths = resolveMemoryPaths(cwd ?? process.cwd(), home);
 	const sections: string[] = [];
 	let budget = maxBytes;
@@ -93,7 +98,7 @@ export function indexHeader(cwd: string | undefined, maxBytes: number, home?: st
 		budget -= header.length + body.length + 2;
 		if (budget <= 0) return;
 	};
-	addLayer("user (shared with pi)", paths.userMemoryDir);
+	if (options?.includeUser !== false) addLayer("user (shared with pi)", paths.userMemoryDir);
 	addLayer("project", paths.memoryDir);
 	return sections.join("\n\n");
 }

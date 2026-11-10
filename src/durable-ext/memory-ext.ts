@@ -29,7 +29,7 @@ const SOFT_CAP_BYTES = 8 * 1024;
 
 export interface MemoryV1Deps {
 	/** Static index header for a cwd (memcore.indexHeader). */
-	indexHeader(cwd: string | undefined, maxBytes: number): string;
+	indexHeader(cwd: string | undefined, maxBytes: number, options?: { includeUser?: boolean }): string;
 	/** memcore.sessionRecall over both layers. */
 	recall(query: string, cwd: string | undefined): Promise<string>;
 	/** memcore runConsolidation under the layer lock; returns the result text. */
@@ -117,8 +117,16 @@ export function createMemoryExtension(deps: MemoryDeps): Extension {
 	if (deps.v1 !== undefined) {
 		const v1 = deps.v1;
 		sections.push(
-			section("memory-index", (input) => {
-				const header = v1.indexHeader(input.agent.cwd, SOFT_CAP_BYTES);
+			section("memory-index", async (input, context) => {
+				const table = await input.read.snapshot(BindingsDoc, context);
+				let includeUser = true;
+				for (const binding of Object.values(table?.bindings ?? {})) {
+					const inThread = Object.values(binding.threads ?? {}).includes(Number(input.conversationId));
+					if (binding.conversationId === Number(input.conversationId) || inThread) {
+						includeUser = binding.policy.mentionOnly !== true;
+					}
+				}
+				const header = v1.indexHeader(input.agent.cwd, SOFT_CAP_BYTES, { includeUser });
 				if (header.length === 0) return undefined;
 				return `${header}\n(用 session_recall 检索全文；memory_consolidate 整合超预算层)`;
 			}),
@@ -166,7 +174,7 @@ export function createMemoryExtension(deps: MemoryDeps): Extension {
 		);
 	}
 
-	return defineExtension({ name: "pi-larkd-memory", sections, tools, hooks, tasks });
+	return defineExtension({ name: "pots-memory", sections, tools, hooks, tasks });
 }
 
 async function cwdOf(api: ToolExecutionApi, context: Context): Promise<string | undefined> {

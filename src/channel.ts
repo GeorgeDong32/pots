@@ -11,9 +11,11 @@ import { createMemoryState } from "@chat-adapter/state-memory";
 import {
 	channelIdFromThreadId,
 	createLarkAdapter,
+	decodeThreadId,
 	encodeThreadId,
 } from "@larksuite/vercel-chat-adapter";
 import type { Logger } from "./log.ts";
+import { sessionKey } from "./session-key.ts";
 import type { ApprovalCardData } from "./approvals.ts";
 import { buildApprovalCard } from "./cards.ts";
 
@@ -27,6 +29,8 @@ export interface InboundMessage {
 	isMention: boolean;
 	isBot: boolean;
 	sentAt: number; // Lark server epoch ms when known, else Date.now()
+	/** Empty or absent is the channel root. A Feishu root message id selects that thread's session. */
+	threadId?: string;
 }
 
 export interface CardAction {
@@ -41,8 +45,8 @@ export interface CardAction {
 export interface Channel {
 	/** Register the inbound message callback; the handler must return fast (3s Lark ack). */
 	onMessage(cb: (m: InboundMessage) => void): void;
-	/** Stream a reply into a chat as one card; `done` gets the full text once the stream closes. */
-	post(chatId: string, chunks: AsyncIterable<string>, done?: (full: string) => void): Promise<void>;
+	/** Stream a reply into a chat as one card. Resolves true only when a send was accepted. */
+	post(chatId: string, chunks: AsyncIterable<string>, done?: (full: string) => void, threadId?: string): Promise<boolean>;
 	/** Post a plain one-shot text message (notices, escalations). */
 	postText(chatId: string, text: string): Promise<void>;
 	/** Post an approval card with Approve/Always/Deny buttons (M5). */
@@ -86,21 +90,34 @@ export interface BurstMerger {
 export function createBurstMerger(options: BurstOptions, emit: (m: InboundMessage) => void): BurstMerger {
 	const state = new Map<
 		string,
-		{ texts: string[]; chars: number; firstId: string; lastId: string; lastSender: string; lastSentAt: number; hasMedia: boolean; timer: ReturnType<typeof setTimeout> | undefined }
+		{
+			chatId: string;
+			threadId?: string;
+			texts: string[];
+			chars: number;
+			firstId: string;
+			lastId: string;
+			lastSender: string;
+			lastSentAt: number;
+			hasMedia: boolean;
+			isMention: boolean;
+			timer: ReturnType<typeof setTimeout> | undefined;
+		}
 	>();
 
-	function flush(chatId: string): void {
-		const batch = state.get(chatId);
-		state.delete(chatId);
+	function flush(key: string): void {
+		const batch = state.get(key);
+		state.delete(key);
 		if (batch === undefined) return;
 		if (batch.timer !== undefined) clearTimeout(batch.timer);
 		if (batch.texts.length === 0) return;
 		emit({
-			chatId,
+			chatId: batch.chatId,
+			threadId: batch.threadId,
 			messageId: batch.texts.length === 1 ? batch.firstId : `${batch.firstId}..${batch.lastId}`,
 			text: batch.texts.join("\n"),
 			senderId: batch.lastSender,
-			isMention: false,
+			isMention: batch.isMention,
 			isBot: false,
 			sentAt: batch.lastSentAt,
 		});
@@ -112,18 +129,21 @@ export function createBurstMerger(options: BurstOptions, emit: (m: InboundMessag
 				emit(inbound);
 				return;
 			}
-			let batch = state.get(inbound.chatId);
+			const key = sessionKey(inbound.chatId, inbound.threadId);
+			let batch = state.get(key);
 			if (
 				batch !== undefined &&
 				(batch.lastSender !== inbound.senderId ||
 					batch.texts.length >= options.maxMessages ||
 					batch.chars >= options.maxChars)
 			) {
-				flush(inbound.chatId);
+				flush(key);
 				batch = undefined;
 			}
 			if (batch === undefined) {
 				batch = {
+					chatId: inbound.chatId,
+					threadId: inbound.threadId,
 					texts: [],
 					chars: 0,
 					firstId: inbound.messageId,
@@ -131,18 +151,20 @@ export function createBurstMerger(options: BurstOptions, emit: (m: InboundMessag
 					lastSender: inbound.senderId,
 					lastSentAt: inbound.sentAt,
 					hasMedia: false,
+					isMention: false,
 					timer: undefined,
 				};
-				state.set(inbound.chatId, batch);
+				state.set(key, batch);
 			}
 			batch.texts.push(inbound.text);
 			batch.chars += inbound.text.length;
 			batch.lastId = inbound.messageId;
 			batch.lastSender = inbound.senderId;
 			batch.lastSentAt = inbound.sentAt;
+			batch.isMention = batch.isMention || inbound.isMention;
 			if (batch.timer !== undefined) clearTimeout(batch.timer);
 			const window = batch.hasMedia ? options.mediaSilenceMs : options.silenceMs;
-			batch.timer = setTimeout(() => flush(inbound.chatId), window);
+			batch.timer = setTimeout(() => flush(key), window);
 		},
 		flushAll() {
 			for (const chatId of [...state.keys()]) flush(chatId);
@@ -179,7 +201,7 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 		concurrency: "queue",
 	});
 
-	/** Most recent live thread per chat, so replies land in the right context. */
+	/** Most recent live SDK thread per session, so replies land in that Feishu thread. */
 	const threads = new Map<string, Thread>();
 
 	function rememberThread(chatId: string, thread: Thread): void {
@@ -188,11 +210,18 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 		if (threads.size > 100) threads.delete(threads.keys().next().value as string);
 	}
 
-	async function threadFor(chatId: string): Promise<Thread> {
-		const live = threads.get(chatId);
+	async function threadFor(chatId: string, threadId = ""): Promise<Thread> {
+		const live = threads.get(sessionKey(chatId, threadId));
 		if (live) return live;
-		// No inbound yet: address the chat directly (empty root = top-level post).
-		return bot.thread(encodeThreadId({ chatId, rootId: "" }));
+		return bot.thread(encodeThreadId({ chatId, rootId: threadId }));
+	}
+
+	function threadRoot(encoded: string): string {
+		try {
+			return decodeThreadId(encoded).rootId ?? "";
+		} catch {
+			return "";
+		}
 	}
 
 	// Burst merging (P1-1.6), via the exported testable merger.
@@ -201,7 +230,8 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 
 	function dispatch(thread: Thread, message: Message): void {
 		const chatId = channelIdFromThreadId(message.threadId);
-		rememberThread(chatId, thread);
+		const threadId = threadRoot(message.threadId);
+		rememberThread(sessionKey(chatId, threadId), thread);
 		// Bot authors never produce agent input (channel-level; policy re-checks in commit).
 		const isBot = message.author.isBot === true;
 		if (isBot) return;
@@ -213,6 +243,7 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 			isMention: message.isMention === true,
 			isBot,
 			sentAt: Date.now(),
+			...(threadId ? { threadId } : {}),
 		};
 		intoBurst(inbound);
 	}
@@ -289,8 +320,8 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 		onMessage(cb) {
 			messageCb = cb;
 		},
-		async post(chatId, chunks, done) {
-			const thread = await threadFor(chatId);
+		async post(chatId, chunks, done, threadId = "") {
+			const thread = await threadFor(chatId, threadId);
 			let full = "";
 			try {
 				const wrapped = (async function* () {
@@ -300,14 +331,20 @@ export function createChannel(options: ChannelOptions, runner: CommandRunner = d
 					}
 				})();
 				await thread.post(wrapped);
+				return true;
 			} catch (error) {
 				options.logger.error("stream post failed; falling back to plain text", {
 					chatId,
 					error: (error as Error).message,
 				});
 				// Degraded path: one plain message with whatever accumulated (P0-3.3).
-				if (full.length > 0) await thread.post(full.slice(0, 4000));
-				else await thread.post("⚠️ 回复发送失败，请重试。");
+				try {
+					if (full.length > 0) await thread.post(full.slice(0, 4000));
+					else await thread.post("⚠️ 回复发送失败，请重试。");
+					return true;
+				} catch {
+					return false;
+				}
 			} finally {
 				done?.(full);
 			}

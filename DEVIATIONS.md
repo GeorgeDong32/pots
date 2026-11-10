@@ -4,7 +4,7 @@
 
 ## D-1 flock → O_EXCL pidfile（P0-5，F12）
 
-- **对照**：P0-5 要求启动即 flock `~/.pi-larkd/daemon.lock`（非阻塞）。
+- **对照**：P0-5 要求启动即 flock `~/.pots/daemon.lock`（非阻塞）。
 - **实情**：macOS 不带 `flock(1)` CLI（Linux util-linux 专属）；Node stdlib 无 `flock(2)` 绑定，引入原生依赖违背最小依赖。
 - **最小替代**：`src/daemon.ts` 的 `acquireProcessLock()` —— `open(path,"wx")` + 写 pid + 存活探测（`kill(pid,0)`，ESRCH 即陈锁可清）。对「手动第二实例 vs launchd 实例」这一目标场景，保证与 flock 等价。
 
@@ -40,7 +40,7 @@
 
 - **对照**：spec「ChannelBinding chord document（chatId 主键）」。
 - **实情**：pi-durable 的 Tx/Session 无文档枚举 API（scanTasks/scanEntries 有、scanDocs 无）；doc family 无法遍历出路由表。审批侧 R2-2 要求 family 是因为并发互覆；路由表是低频单写者（bind 工具 + 迁移），单文档原子更新安全且天然可枚举。
-- **决定**：session 单文档 `pi-larkd.bindings`，`bindings: Record<chatId, ChannelBinding>`，chatId 仍是逻辑主键。语义与 spec 一致。
+- **决定**：session 单文档 `pots.bindings`，`bindings: Record<chatId, ChannelBinding>`，chatId 仍是逻辑主键。语义与 spec 一致。
 
 ## D-8 patrol 通知丢失窗口的设计取舍（P1-2.3 / F11）
 
@@ -49,7 +49,7 @@
 
 ## D-9 cc-core 语义核的就地引用方式（P2-2）
 
-- **对照**：spec「以 workspace 依赖（pnpm workspace 或 file: 协议）引 pi-larkd，不 copy」。
+- **对照**：spec「以 workspace 依赖（pnpm workspace 或 file: 协议）引 pots，不 copy」。
 - **实情**：cc-core（@georgedong32/pi-claude-code-core）是单包仓库，exports 只暴露 `./types`；`extensions/memory/` 不是包也无 package.json——file:/workspace 依赖在事实上不可构造（且不得改动现有仓）。
 - **最小替代**：`src/memcore.ts` 作为**唯一**跨仓进口，相对路径 `../../Pi-Extension/pi-claude-code-core/extensions/memory/*.ts` 就地引用源码（不 copy）。后果与对策：
   1. daemon 运行时改为 `node --experimental-transform-types src/daemon.ts`（cc-core 用了 TS parameter property，strip-only 不够；全仓 .ts 直跑，无构建产物——run.sh 已同步）。
@@ -65,5 +65,5 @@
 ## D-11 记忆锁与 cc-core 锁原语的关系（F25 / P2-2.1）
 
 - **对照**：spec「先核实 cc-core store 写入原语；无论结果补 per-file flock」。
-- **核实结果**：cc-core 写原语=per-file tmp+rename（原子）；consolidation 自带 `acquireLayerLock`（mkdir 原子锁 + TTL 抢占）——即跨进程互斥已存在于核心，pi 侧与 pi-larkd 侧共用同一把锁。额外 per-file flock 会与该锁形成两层（无必要且引入新的失败面）。
-- **决定**：pi-larkd 的写路径全部经 `runConsolidation`/`applyMemoryOps`（内部持锁）；读侧快照容忍瞬时不一致（tmp+rename 保证单文件原子）。DEVIATIONS 记录此为 F25 的落地形态。
+- **核实结果**：cc-core 写原语=per-file tmp+rename（原子）；consolidation 自带 `acquireLayerLock`（mkdir 原子锁 + TTL 抢占）——即跨进程互斥已存在于核心，pi 侧与 pots 侧共用同一把锁。额外 per-file flock 会与该锁形成两层（无必要且引入新的失败面）。
+- **决定**：pots 的写路径全部经 `runConsolidation`/`applyMemoryOps`（内部持锁）；读侧快照容忍瞬时不一致（tmp+rename 保证单文件原子）。DEVIATIONS 记录此为 F25 的落地形态。

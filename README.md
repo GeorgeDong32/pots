@@ -1,4 +1,4 @@
-# pi-larkd
+# pots
 
 飞书（Lark）双工 super-agent daemon：飞书多 channel 经官方 Lark adapter（WebSocket）进入
 [pi-durable](https://github.com/earendil-works/pi) Harness，流式卡片回复、崩溃续跑、事件重投幂等；
@@ -38,43 +38,58 @@ node scripts/status.mjs                                                      # �
 依赖 pin：`@earendil-works/pi-durable@1.5.0`（exact）。升级面= `src/substrate.ts` +
 `src/durable-ext/**` + `src/memcore.ts`（ESLint import 门钉住；runbook：`scripts/upgrade.sh`）。
 
+## 安装
+
+在本仓库执行一次。`pots` 会进 `PNPM_HOME`（这台机器是 `~/Library/pnpm`），数据仍在 `~/.pots`，不复制源码，因此旁边的 `Pi-Extension` 记忆核继续可用。
+
+```bash
+pnpm install
+pnpm add -g .
+pots
+```
+
+卸掉全局命令：`pnpm remove -g pots`。这不删除 `~/.pots`。
+
 ## 部署
 
-1. **Keychain**（secret 永不进 config/plist/git）：
+和 Hermes 一样，密钥放在家目录的 `.env`，模型地址放在配置文件。启动时会读 `~/.pots/.env`，已经存在的环境变量优先。Keychain 服务 `pots` 只在对应变量没写时才用。
 
-   ```bash
-   security add-generic-password -s pi-larkd -a lark-app-secret -w '<LARK_APP_SECRET>'
-   security add-generic-password -s pi-larkd -a model-api-key -w '<模型 API key>'
-   ```
+`~/.pots/.env`：
 
-2. **配置** `~/.pi-larkd/config.json`（模板；无 secret）：
+```bash
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=
+FEISHU_HOME_CHANNEL=oc_xxx
+FEISHU_ALLOWED_USERS=ou_xxx
+POTS_MODEL_API_KEY=
+```
 
-   ```json
-   {
-     "homeChatId": "oc_xxx",
-     "ownerOpenId": "ou_xxx",
-     "model": {
-       "provider": "cpa",
-       "modelId": "<CPA 上的模型 id>",
-       "baseUrl": "http://127.0.0.1:18317",
-       "contextWindow": 200000,
-       "maxTokens": 32768
-     }
-   }
-   ```
+`~/.pots/config.json`：
 
-3. **飞书自建应用**：机器人能力、`im:message`（群加 `im:message.group_msg`）、事件订阅 WS 模式、
-   card.action.trigger 回调，**发布版本**。`cli_a...` App ID 填 plist 的 `LARK_APP_ID`。
+```json
+{
+  "model": {
+    "provider": "cpa",
+    "modelId": "Minimax/MiniMax-M3.1-Flash",
+    "baseUrl": "http://127.0.0.1:8317/v1",
+    "keyEnv": "POTS_MODEL_API_KEY",
+    "contextWindow": 200000,
+    "maxTokens": 32768
+  }
+}
+```
 
-4. **launchd**：
+`homeChatId` 和 `ownerOpenId` 可以写在 JSON 里。没写时分别用 `FEISHU_HOME_CHANNEL` 和 `FEISHU_ALLOWED_USERS` 的第一个 id。`keyEnv` 的名字对应 `.env` 里的变量，值不要写进 JSON。
 
-   ```bash
-   cp launchd/dev.gd32.pi-larkd.plist ~/Library/LaunchAgents/
-   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.gd32.pi-larkd.plist
-   tail -f ~/Library/Logs/pi-larkd.log
-   ```
+飞书自建应用需要机器人能力、`im:message`（群加 `im:message.group_msg`）、事件订阅 WS 模式和 card.action.trigger，并发布版本。
 
-回滚：`launchctl bootout gui/$(id -u)/dev.gd32.pi-larkd` + 删本目录（不触碰 pi 安装面）。
+```bash
+cp launchd/dev.gd32.pots.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.gd32.pots.plist
+tail -f ~/Library/Logs/pots.log
+```
+
+回滚：`launchctl bootout gui/$(id -u)/dev.gd32.pots`。不要删 `~/.pots`，除非你确定不要会话和例程。
 
 ## 运维速查
 
@@ -89,7 +104,7 @@ node scripts/status.mjs                                                      # �
 
 ## 记忆
 
-- v0：`~/.pi-larkd/memory/shared.md` + `channels/<chatId>.md`（memory_write 工具，owner-only 约定）
+- v0：`~/.pots/memory/shared.md` + `channels/<chatId>.md`（memory_write 工具，owner-only 约定）
 - v1：cc-core 语义核（`~/.pi/agent/memory` 用户层与本机 pi **共享**，双方 consolidation 共用同一把
   层锁）；session_recall 检索 + memory_consolidate 收缩（必收缩+provenance 校验）+ 超预算自动去抖整合
 

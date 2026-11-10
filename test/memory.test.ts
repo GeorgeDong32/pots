@@ -13,8 +13,8 @@ const closed: Substrate[] = [];
 const realHome = process.env.HOME;
 
 beforeEach(() => {
-	home = join(tmpdir(), `pi-larkd-mem-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-	mkdirSync(join(home, ".pi-larkd", "memory"), { recursive: true });
+	home = join(tmpdir(), `pots-mem-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	mkdirSync(join(home, ".pots", "memory"), { recursive: true });
 	process.env.HOME = home;
 });
 
@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 async function setup(extra: { v1?: boolean } = {}) {
-	const agentHome = join(home as string, ".pi-larkd");
+	const agentHome = join(home as string, ".pots");
 	const { substrate, faux } = await openTestSubstrate({
 		homeChatId: "oc_home",
 		ownerOpenId: "ou_owner",

@@ -125,7 +125,7 @@ export function createSupervisorExtension(deps: SupervisorDeps): Extension {
 	});
 
 	return defineExtension({
-		name: "pi-larkd-supervisor",
+		name: "pots-supervisor",
 		tools: [boardStatusTool, boardTasksTool, watchRunTool, workspaceListTool, dispatchNoteTool, channelBindTool],
 	});
 }

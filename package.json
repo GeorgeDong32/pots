@@ -1,9 +1,12 @@
 {
-  "name": "pi-larkd",
+  "name": "pots",
   "version": "0.1.0",
   "description": "Feishu (Lark) duplex super-agent daemon on pi-durable",
   "type": "module",
   "private": true,
+  "bin": {
+    "pots": "./scripts/pots"
+  },
   "engines": {
     "node": ">=22.19"
   },

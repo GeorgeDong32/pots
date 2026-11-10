@@ -1,16 +1,19 @@
 /**
- * pi-larkd daemon entry — assembles M1/M2/M3/M4/M5, holds the single-instance
+ * pots daemon entry — assembles M1/M2/M3/M4/M5, holds the single-instance
  * lock, and shuts down gracefully on SIGTERM (F06/F12/F13/F15).
  */
 import { openSync, closeSync, unlinkSync, writeSync, existsSync, readFileSync, mkdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
+import { loadDotEnv } from "./dotenv.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createChannel } from "./channel.ts";
-import type { LarkdConfig } from "./config.ts";
+import type { PotsConfig } from "./config.ts";
 import { loadConfig } from "./config.ts";
 import { readKeychainSecret } from "./keychain.ts";
-import { createLogger, type Logger } from "./log.ts";
+import { createLogger } from "./log.ts";
 import { createBridge } from "./bridge.ts";
 import { buildModels, openSubstrate, type Substrate } from "./substrate.ts";
 import { ApprovalManager } from "./approvals.ts";
@@ -22,9 +25,14 @@ import { createMemoryExtension } from "./durable-ext/memory-ext.ts";
 import { createMemoryV1Deps } from "./memory-v1.ts";
 import { reindexBoth } from "./memcore.ts";
 import { createCronExtension, createMorningReportTask, createReminderExtension, createReminderTask } from "./durable-ext/cron-tasks.ts";
+import { tickRoutines, type RoutineEffects } from "./routine-run.ts";
+import { releaseStuckRuns } from "./routine-store.ts";
+import { sendFeishuMessage } from "./feishu-send.ts";
 import { writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
-const SHUTDOWN_NOTE = "⏸ pi-larkd 正在关闭（重启后会继续未完成的回复）。";
+const SHUTDOWN_NOTE = "⏸ pots 正在关闭（重启后会继续未完成的回复）。";
 
 interface ProcessLock {
 	release(): void;
@@ -41,12 +49,12 @@ function acquireProcessLock(path: string): ProcessLock {
 			const pid = Number.parseInt(readFileSync(path, "utf8").trim(), 10);
 			if (Number.isInteger(pid)) {
 				process.kill(pid, 0); // throws ESRCH when stale
-				console.error(`pi-larkd: another instance is running (pid ${pid}); exiting`);
+				console.error(`pots: another instance is running (pid ${pid}); exiting`);
 				process.exit(1);
 			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-				console.error(`pi-larkd: cannot probe existing lock ${path}: ${(error as Error).message}`);
+				console.error(`pots: cannot probe existing lock ${path}: ${(error as Error).message}`);
 				process.exit(1);
 			}
 			unlinkSync(path); // stale lock
@@ -80,28 +88,34 @@ function lateBind<T extends object>(): { set(impl: T): void; proxy: T } {
 }
 
 async function main(): Promise<void> {
-	const configPath = process.env.PI_LARKD_CONFIG;
-	if (!configPath) {
-		console.error("pi-larkd: PI_LARKD_CONFIG (path to config.json) is required");
-		process.exit(2);
-	}
-	const cfg: LarkdConfig = loadConfig(configPath);
+	loadDotEnv(join(homedir(), ".pots", ".env"));
+	const configPath = process.env.POTS_CONFIG ?? join(homedir(), ".pots", "config.json");
+	loadDotEnv(join(configPath, "..", ".env"));
+	const cfg: PotsConfig = loadConfig(configPath);
 	mkdirSync(cfg.agentHome, { recursive: true });
 	const logger = createLogger("info");
-
 	const lock = acquireProcessLock(join(cfg.agentHome, "daemon.lock"));
 
-	// F13: secrets come from the Keychain, never from the config file or plist.
-	const [larkAppSecret, modelApiKey] = await Promise.all([
-		readKeychainSecret(cfg.keychain.service, cfg.keychain.larkSecretAccount),
-		readKeychainSecret(cfg.keychain.service, cfg.keychain.modelKeyAccount),
-	]);
+	const appId = process.env.FEISHU_APP_ID || blank(process.env.LARK_APP_ID);
+	const appSecret = process.env.FEISHU_APP_SECRET || (await keychainOrEmpty(cfg.keychain.service, cfg.keychain.larkSecretAccount));
+	const modelApiKey =
+		envValue(cfg.model.keyEnv) ||
+		process.env.POTS_MODEL_API_KEY ||
+		(await keychainOrEmpty(cfg.keychain.service, cfg.keychain.modelKeyAccount));
+	if (!appId || !appSecret) {
+		logger.error("missing Feishu credentials. Set FEISHU_APP_ID and FEISHU_APP_SECRET in ~/.pots/.env");
+		process.exit(2);
+	}
+	if (!modelApiKey) {
+		logger.error("missing model API key. Set POTS_MODEL_API_KEY or model.keyEnv in ~/.pots/.env");
+		process.exit(2);
+	}
 
 	// Assemble with late-bound deps: the extensions must exist before the
 	// substrate opens (registry), while their impls need the substrate.
 	const channel = createChannel({
-		appId: envOrThrow("LARK_APP_ID", logger),
-		appSecret: larkAppSecret,
+		appId,
+		appSecret,
 		botName: cfg.botName,
 		larkCliPath: cfg.larkCliPath,
 		logger,
@@ -113,7 +127,10 @@ async function main(): Promise<void> {
 	const patrolTask = createPatrolTask({
 		readBoard: (boardPath) =>
 			readFile(boardPath, "utf8").catch(() => null),
-		post: (chatId, text) => channel.postText(chatId, text),
+		post: async (chatId, text) => {
+			if (process.env.POTS_SKIP_CHANNEL === "1") return;
+			await channel.postText(chatId, text);
+		},
 		summarize: summarizeBoard,
 	});
 	// P3-3 cron family: morning report (09:00, missed-run catch-up) + reminders.
@@ -144,9 +161,15 @@ async function main(): Promise<void> {
 			}
 			return parts.join("\n\n") || "（无内容）";
 		},
-		post: (text) => channel.postText(cfg.homeChatId, text),
+		post: async (text) => {
+			if (process.env.POTS_SKIP_CHANNEL === "1") return;
+			await channel.postText(cfg.homeChatId, text);
+		},
 	});
-	const reminderTask = createReminderTask((text) => channel.postText(cfg.homeChatId, text));
+	const reminderTask = createReminderTask(async (text) => {
+		if (process.env.POTS_SKIP_CHANNEL === "1") return;
+		await channel.postText(cfg.homeChatId, text);
+	});
 
 	const substrate: Substrate = await openSubstrate({
 		storage: { kind: "sqlite", path: cfg.dbPath },
@@ -156,7 +179,7 @@ async function main(): Promise<void> {
 		homeChatId: cfg.homeChatId,
 		ownerOpenId: cfg.ownerOpenId,
 		instructions:
-			`你是 GD 的个人 super-agent（pi-larkd），经飞书与 owner 双工对话，并监控 rex-flow 工作区。\n` +
+			`你是 GD 的个人 super-agent（pots），经飞书与 owner 双工对话，并监控 rex-flow 工作区。\n` +
 			`工具面：read 可读文件；board_status/board_tasks/watch_run/workspace_list 只读监控 rex-flow board；\n` +
 			`dispatch_note 追加派工提示；memory_write/session_recall/memory_consolidate 管理双层记忆；\n` +
 			`其余写/执行类工具须经飞书卡片审批。\n` +
@@ -229,8 +252,48 @@ async function main(): Promise<void> {
 		}
 	});
 
-	await channel.start();
-	logger.info("pi-larkd started", {
+	const skipChannel = process.env.POTS_SKIP_CHANNEL === "1";
+	if (!skipChannel) {
+		await channel.start();
+		void bridge.redeliverPending();
+		logger.info("Feishu websocket connected");
+	}
+	const routineFile = join(cfg.agentHome, "routines.json");
+	releaseStuckRuns(routineFile);
+	const routineEffects: RoutineEffects = {
+		exec: async (file, args, cwd) => {
+			try {
+				const { stdout } = await promisify(execFile)(file, args, { cwd, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
+				return { stdout, code: 0 };
+			} catch (error) {
+				const failed = error as { stdout?: string; code?: number };
+				return { stdout: failed.stdout ?? "", code: failed.code ?? 1 };
+			}
+		},
+		complete: async (routineId, prompt, place) => {
+			const conv = await substrate.routineConversation(routineId, place);
+			const submitted = await substrate.submit(conv, {
+				type: "input",
+				content: prompt,
+				requestId: `routine:${routineId}:${place?.slot ?? "manual"}`,
+			});
+			const settled = await submitted.wait(BACKGROUND_CONTEXT);
+			if (settled.status === "done" && settled.answer !== undefined) return substrate.answerText(settled.answer);
+			return settled.status === "unanswered" ? settled.reason : "";
+		},
+		post: async (chatId, threadId, text, idempotencyKey) => {
+			await sendFeishuMessage({ chatId, threadId, text, idempotencyKey });
+		},
+		shadowDir: join(cfg.agentHome, "routine-shadow"),
+		homes: { feishu: cfg.homeChatId },
+	};
+	const routineTimer = setInterval(() => {
+		void tickRoutines(routineFile, routineEffects).catch((error) => {
+			logger.warn("routine tick failed", { error: (error as Error).message });
+		});
+	}, 20_000);
+	void routineTimer;
+	logger.info("pots started", {
 		homeChatId: cfg.homeChatId,
 		channels: Object.keys(bindings).length,
 		dbPath: cfg.dbPath,
@@ -243,10 +306,12 @@ async function main(): Promise<void> {
 	const heartbeat = async (): Promise<void> => {
 		try {
 			const inspect = await substrate.inspect();
-			await channel.postText(
-				cfg.homeChatId,
-				`💓 pi-larkd alive · uptime ${Math.round((Date.now() - startedAt) / 3600000)}h · conversations ${inspect.conversations.length}`,
-			);
+			if (!skipChannel) {
+				await channel.postText(
+					cfg.homeChatId,
+					`💓 pots alive · uptime ${Math.round((Date.now() - startedAt) / 3600000)}h · conversations ${inspect.conversations.length}`,
+				);
+			}
 			// Patrol self-heal (P3-3.3): re-arm any dead patrol for board-bound chats.
 			const current = await substrate.bindings();
 			for (const binding of Object.values(current.bindings)) {
@@ -294,16 +359,25 @@ async function main(): Promise<void> {
 	});
 }
 
-function envOrThrow(name: string, logger: Logger): string {
-	const value = process.env[name];
-	if (!value) {
-		logger.error(`missing required env var ${name}`);
-		process.exit(2);
-	}
+function blank(value: string | undefined): string {
+	if (value === undefined || value === "" || value === "SET_ME_IN_PLACE") return "";
 	return value;
 }
 
+function envValue(name: string | undefined): string {
+	if (name === undefined) return "";
+	return blank(process.env[name]);
+}
+
+async function keychainOrEmpty(service: string, account: string): Promise<string> {
+	try {
+		return await readKeychainSecret(service, account);
+	} catch {
+		return "";
+	}
+}
+
 void main().catch((error) => {
-	console.error(`pi-larkd: fatal: ${(error as Error).stack ?? error}`);
+	console.error(`pots: fatal: ${(error as Error).stack ?? error}`);
 	process.exit(1);
 });

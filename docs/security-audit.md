@@ -2,9 +2,9 @@
 
 ## 凭据链
 
-- [x] secret 只存在于 macOS Keychain（item：`pi-larkd/lark-app-secret`、`pi-larkd/model-api-key`）
+- [x] secret 只存在于 macOS Keychain（item：`pots/lark-app-secret`、`pots/model-api-key`）
 - [x] config.json / plist / git / 日志零 secret（log.ts 对 key/secret/token 类字段名强制 redact）
-- [x] plist 只传 `PI_LARKD_CONFIG` 路径与 `LARK_APP_ID`（App ID 非机密）
+- [x] plist 只传 `POTS_CONFIG` 路径与 `LARK_APP_ID`（App ID 非机密）
 
 ## 准入与工具面
 

@@ -16,9 +16,9 @@ rerun 无害）才允许恢复重跑；未标注=默认 `unsafe`（interrupted �
 | `memory_consolidate` | unsafe（默认） | 写记忆层（持锁+必收缩校验），崩溃中断正确。 |
 | `channel_bind` | unsafe（默认） | 改路由表=改安全边界；且经 M5 审批（审批本身有 pending-guard 幂等，但工具重跑不标注）。 |
 | `remind` | unsafe（默认） | 创建 durable task——rerun=重复提醒。经 M5 审批。 |
-| `pi-larkd.patrol` 任务 | 按 phase 设计 | poll=纯读+doc commit；escalate 的 post 有 postedDiffIds 环幂等（B3）。 |
-| `pi-larkd.memory-consolidate-debounce` | 幂等 by design | overBudget 复查+follow-up 提交（requestId 未显式——重复提交最多多一次 directive 输入，agent 幂等处理）。 |
-| `pi-larkd.morning-report` / `pi-larkd.reminder` | 幂等 by design | day 键防重发；reminder 终态后不复跑。 |
+| `pots.patrol` 任务 | 按 phase 设计 | poll=纯读+doc commit；escalate 的 post 有 postedDiffIds 环幂等（B3）。 |
+| `pots.memory-consolidate-debounce` | 幂等 by design | overBudget 复查+follow-up 提交（requestId 未显式——重复提交最多多一次 directive 输入，agent 幂等处理）。 |
+| `pots.morning-report` / `pots.reminder` | 幂等 by design | day 键防重发；reminder 终态后不复跑。 |
 
 ## bash 的 replay 结论（P3-1.1）
 

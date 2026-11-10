@@ -5,6 +5,7 @@
  */
 import type { Channel, InboundMessage } from "./channel.ts";
 import type { Logger } from "./log.ts";
+import { sessionKey } from "./session-key.ts";
 import {
 	partialText,
 	type Conversation,
@@ -20,6 +21,8 @@ export interface BridgeConfig {
 export interface Bridge {
 	/** Entry point for every inbound message (live and backfilled alike). */
 	handle(msg: InboundMessage): void;
+	/** Retry replies that were accepted into the outbox but not marked sent. */
+	redeliverPending(): Promise<void>;
 	/** Graceful shutdown: finalize streaming cards with `note`, stop pumps (F15). */
 	finalize(note: string): Promise<void>;
 }
@@ -76,9 +79,22 @@ export function createBridge(deps: {
 				await denyNotice(msg.chatId);
 				return;
 			}
-			const conv = await substrate.bindingConversation(msg.chatId);
+			const conv = await substrate.sessionConversation(msg.chatId, msg.threadId);
+			const requestId = `feishu:${msg.messageId}`;
+			const owned = await substrate.recordDelivery({
+				requestId,
+				submissionId: Number(result.submissionId),
+				chatId: msg.chatId,
+				threadId: msg.threadId ?? "",
+				status: "pending",
+				updatedAt: Date.now(),
+			});
+			if (!owned) {
+				logger.info("delivery already recorded", { chatId: msg.chatId, messageId: msg.messageId });
+				return;
+			}
 			logger.info("admitted", { chatId: msg.chatId, messageId: msg.messageId, submissionId: result.submissionId });
-			void pump(conv, msg.chatId, result.submissionId);
+			void pump(conv, msg.chatId, result.submissionId, requestId, msg.threadId);
 		} catch (error) {
 			logger.error("handle failed", {
 				chatId: msg.chatId,
@@ -133,8 +149,15 @@ export function createBridge(deps: {
 	 * (multi-turn run) resets the prefix, so its text appends. A new pump for
 	 * the same chat closes this one immediately (P0-4.3).
 	 */
-	async function pump(conv: Conversation, chatId: string, submissionId: SubmissionId): Promise<void> {
-		pumps.get(chatId)?.close();
+	async function pump(
+		conv: Conversation,
+		chatId: string,
+		submissionId: SubmissionId,
+		requestId?: string,
+		threadId?: string,
+	): Promise<void> {
+		const key = sessionKey(chatId, threadId);
+		pumps.get(key)?.close();
 
 		let lastPartial = "";
 		let closed = false;
@@ -184,13 +207,13 @@ export function createBridge(deps: {
 				finish();
 			},
 		};
-		pumps.set(chatId, own);
+		pumps.set(key, own);
 
 		const submission = await substrate.submission(submissionId);
 		if (submission === undefined) {
 			logger.error("pump: submission vanished", { chatId, submissionId });
 			stopWatch();
-			if (pumps.get(chatId) === own) pumps.delete(chatId);
+			if (pumps.get(key) === own) pumps.delete(key);
 			return;
 		}
 
@@ -199,15 +222,15 @@ export function createBridge(deps: {
 			// The card stream runs concurrently with the wait; both drive the same queue.
 			const posted = channel.post(chatId, stream, (full) => {
 				logger.info("card finalized", { chatId, submissionId, chars: full.length });
-			});
+			}, threadId);
 			const settled = await submission.wait();
 			if (settled.status === "done" && settled.answer !== undefined) {
 				const answer = await substrate.answerText(settled.answer);
 				// The committed answer is the last attempt's full text; stream the remainder.
 				if (answer.startsWith(lastPartial)) {
 					enqueue(answer.slice(lastPartial.length));
-				} else if (answer.length > 0) {
-					enqueue(`${lastPartial.length > 0 ? "\n\n" : ""}${answer}`);
+				} else if (lastPartial.length === 0 && answer.length > 0) {
+					enqueue(answer);
 				}
 				finish();
 			} else if (settled.status === "unanswered") {
@@ -216,14 +239,15 @@ export function createBridge(deps: {
 			} else {
 				finish();
 			}
-			await posted;
+			const accepted = await posted;
+			if (requestId !== undefined && accepted && !closed) await substrate.markDeliverySent(requestId);
 		} catch (error) {
 			pumpError = error as Error;
 			finish();
 		} finally {
 			// Never close a successor pump that already replaced this one (P0-4.3).
-			if (pumps.get(chatId) === own) {
-				pumps.delete(chatId);
+			if (pumps.get(key) === own) {
+				pumps.delete(key);
 			}
 			stopWatch();
 			if (pumpError) logger.error("pump failed", { chatId, submissionId, error: pumpError.message });
@@ -232,6 +256,12 @@ export function createBridge(deps: {
 
 	return {
 		handle,
+		async redeliverPending() {
+			for (const delivery of await substrate.pendingDeliveries()) {
+				const conv = await substrate.sessionConversation(delivery.chatId, delivery.threadId || undefined);
+				await pump(conv, delivery.chatId, delivery.submissionId as SubmissionId, delivery.requestId, delivery.threadId || undefined);
+			}
+		},
 		async finalize(note) {
 			for (const [chatId, pumpHandle] of pumps) {
 				pumpHandle.close();

@@ -20,13 +20,15 @@ export type ChannelBinding = {
 	conversationId: number; // created at bind time
 	cwd: string; // workspace; DM home = AGENT_HOME
 	boardPath?: string; // rex-flow board for M4 patrol (additive field)
+	/** Feishu thread root id → conversation. The channel root stays on conversationId. */
+	threads?: Record<string, number>;
 	policy: ChannelPolicy;
 	createdAt: number;
 }
 
 /** Session-scope singleton holding the whole routing table. */
 export const BindingsDoc = defineDoc<{ bindings: Record<string, ChannelBinding>; homeChatId: string }>({
-	kind: "pi-larkd.bindings",
+	kind: "pots.bindings",
 	version: 1,
 	scope: "session",
 	initial: () => ({ bindings: {}, homeChatId: "" }),
@@ -48,7 +50,7 @@ export type ApprovalState = {
 }
 
 export const ApprovalDoc = defineDocFamily<ApprovalState, string>({
-	kind: "pi-larkd.approval",
+	kind: "pots.approval",
 	version: 1,
 	scope: "session",
 	family: true,
@@ -67,7 +69,7 @@ export const ApprovalDoc = defineDocFamily<ApprovalState, string>({
 
 /** Index of pending approvals so the janitor and startup sweeps can find them. */
 export const PendingApprovalsDoc = defineDoc<{ approvalIds: string[] }>({
-	kind: "pi-larkd.pending-approvals",
+	kind: "pots.pending-approvals",
 	version: 1,
 	scope: "session",
 	initial: () => ({ approvalIds: [] }),
@@ -76,7 +78,7 @@ export const PendingApprovalsDoc = defineDoc<{ approvalIds: string[] }>({
 
 /** Session-scoped "Always" approvals: exact digest, 4h TTL (F21). Key: `${conversationId}:${toolName}:${digest}`. */
 export const SessionApprovalsDoc = defineDocFamily<{ expiresAt: number; approvalId: string }, string>({
-	kind: "pi-larkd.session-approvals",
+	kind: "pots.session-approvals",
 	version: 1,
 	scope: "session",
 	family: true,
@@ -93,7 +95,7 @@ export const PatrolDoc = defineDocFamily<
 	},
 	string
 >({
-	kind: "pi-larkd.patrol",
+	kind: "pots.patrol",
 	version: 1,
 	scope: "session",
 	family: true,
@@ -105,3 +107,41 @@ export const PatrolDoc = defineDocFamily<
 export function sessionApprovalKey(conversationId: number, toolName: string, digest: string): string {
 	return `${conversationId}:${toolName}:${digest}`;
 }
+
+/** One outbound reply. `sent` is recorded only after the channel accepts it. */
+export type DeliveryState = {
+	requestId: string;
+	submissionId: number;
+	chatId: string;
+	threadId: string;
+	status: "pending" | "sent";
+	updatedAt: number;
+};
+
+export const DeliveryDoc = defineDocFamily<DeliveryState, string>({
+	kind: "pots.delivery",
+	version: 1,
+	scope: "session",
+	family: true,
+	initial: () => ({ requestId: "", submissionId: 0, chatId: "", threadId: "", status: "pending", updatedAt: 0 }),
+	checkpointWhen: () => false,
+});
+
+export const PendingDeliveriesDoc = defineDoc<{ requestIds: string[] }>({
+	kind: "pots.pending-deliveries",
+	version: 1,
+	scope: "session",
+	initial: () => ({ requestIds: [] }),
+	checkpointWhen: () => false,
+});
+
+/** Local routine runs keep their own conversations, separate from Feishu threads. */
+export type RoutineSession = { conversationId: number; cwd: string; chatId: string };
+
+export const RoutineSessionsDoc = defineDoc<{ sessions: Record<string, RoutineSession> }>({
+	kind: "pots.routine-sessions",
+	version: 1,
+	scope: "session",
+	initial: () => ({ sessions: {} }),
+	checkpointWhen: () => false,
+});

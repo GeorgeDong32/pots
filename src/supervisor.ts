@@ -103,7 +103,7 @@ export function createSupervisor(substrate: Substrate, options: SupervisorOption
 			await mkdir(dir, { recursive: true });
 			const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 			const file = join(dir, `note-${task}-${stamp}.md`);
-			await appendFile(file, `# note ${runName}/${task}\n\n${text}\n\n(from pi-larkd super-agent)\n`, "utf8");
+			await appendFile(file, `# note ${runName}/${task}\n\n${text}\n\n(from pots super-agent)\n`, "utf8");
 			return `note appended: ${file}`;
 		},
 		async bindChannel(input) {

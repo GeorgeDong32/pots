@@ -1,0 +1,14 @@
+#!/bin/sh
+# pots bin. Follow symlinks so `pnpm link --global` still runs this checkout.
+set -eu
+SOURCE=$0
+while [ -L "$SOURCE" ]; do
+  LINKDIR=$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)
+  TARGET=$(readlink "$SOURCE")
+  case $TARGET in
+    /*) SOURCE=$TARGET ;;
+    *) SOURCE=$LINKDIR/$TARGET ;;
+  esac
+done
+ROOT=$(CDPATH= cd -- "$(dirname -- "$SOURCE")/.." && pwd -P)
+exec node --experimental-transform-types --disable-warning=ExperimentalWarning "$ROOT/src/pots.ts" "$@"
